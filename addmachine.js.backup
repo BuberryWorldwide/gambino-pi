@@ -1,0 +1,633 @@
+#!/usr/bin/env node
+
+/**
+ * Gambino Pi - Machine Management CLI (Node.js)
+ * Advanced machine addition and configuration tool
+ */
+
+const fs = require('fs');
+const path = require('path');
+const readline = require('readline');
+const axios = require('axios').catch(() => null); // Optional dependency
+
+// Configuration
+const CONFIG = {
+  machineMapping: path.join(__dirname, 'data', 'machine-mappings.json'),
+  configDir: path.join(__dirname, 'config'),
+  dataDir: path.join(__dirname, 'data'),
+  envFile: path.join(__dirname, '.env')
+};
+
+// Colors for console output
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m'
+};
+
+// Logger utility
+class Logger {
+  static log(level, message) {
+    const timestamp = new Date().toISOString();
+    const levelColors = {
+      INFO: colors.green,
+      WARN: colors.yellow,
+      ERROR: colors.red,
+      DEBUG: colors.blue
+    };
+    
+    const color = levelColors[level] || colors.reset;
+    console.log(`${color}[${level}]${colors.reset} ${timestamp} - ${message}`);
+  }
+
+  static info(message) { this.log('INFO', message); }
+  static warn(message) { this.log('WARN', message); }
+  static error(message) { this.log('ERROR', message); }
+  static debug(message) { this.log('DEBUG', message); }
+}
+
+// Configuration manager
+class ConfigManager {
+  constructor() {
+    this.config = {};
+    this.loadEnvironment();
+    this.ensureDirectories();
+  }
+
+  loadEnvironment() {
+    try {
+      if (fs.existsSync(CONFIG.envFile)) {
+        const envContent = fs.readFileSync(CONFIG.envFile, 'utf8');
+        const envLines = envContent.split('\n').filter(line => 
+          line.trim() && !line.trim().startsWith('#')
+        );
+
+        envLines.forEach(line => {
+          const [key, ...valueParts] = line.split('=');
+          if (key && valueParts.length > 0) {
+            this.config[key.trim()] = valueParts.join('=').trim();
+          }
+        });
+
+        Logger.info('Environment configuration loaded');
+      }
+    } catch (error) {
+      Logger.warn(`Failed to load environment: ${error.message}`);
+    }
+
+    // Set defaults
+    this.config.MACHINE_ID = this.config.MACHINE_ID || `gambino-pi-${require('os').hostname()}`;
+    this.config.STORE_ID = this.config.STORE_ID || 'store_default';
+    this.config.API_ENDPOINT = this.config.API_ENDPOINT || 'https://api.gambino.gold';
+  }
+
+  ensureDirectories() {
+    [CONFIG.configDir, CONFIG.dataDir].forEach(dir => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        Logger.info(`Created directory: ${dir}`);
+      }
+    });
+
+    // Initialize machine mapping file if it doesn't exist
+    if (!fs.existsSync(CONFIG.machineMapping)) {
+      fs.writeFileSync(CONFIG.machineMapping, '{}');
+      Logger.info('Created machine mapping file');
+    }
+  }
+
+  get(key) {
+    return this.config[key];
+  }
+}
+
+// Machine mapping manager
+class MachineMapper {
+  constructor() {
+    this.mappingFile = CONFIG.machineMapping;
+    this.mappings = this.loadMappings();
+  }
+
+  loadMappings() {
+    try {
+      if (fs.existsSync(this.mappingFile)) {
+        const content = fs.readFileSync(this.mappingFile, 'utf8');
+        return JSON.parse(content);
+      }
+    } catch (error) {
+      Logger.error(`Failed to load mappings: ${error.message}`);
+    }
+    return {};
+  }
+
+  saveMappings() {
+    try {
+      fs.writeFileSync(this.mappingFile, JSON.stringify(this.mappings, null, 2));
+      return true;
+    } catch (error) {
+      Logger.error(`Failed to save mappings: ${error.message}`);
+      return false;
+    }
+  }
+
+  addMapping(physicalId, config) {
+    const mapping = {
+      physicalId: parseInt(physicalId),
+      logicalId: config.logicalId,
+      name: config.name,
+      gameType: config.gameType,
+      location: config.location || '',
+      storeId: config.storeId,
+      status: 'active',
+      addedAt: new Date().toISOString(),
+      lastSeen: null
+    };
+
+    this.mappings[physicalId] = mapping;
+    
+    if (this.saveMappings()) {
+      Logger.info(`Machine mapping added: Physical ${physicalId} -> ${config.logicalId}`);
+      return true;
+    }
+    return false;
+  }
+
+  removeMapping(physicalId) {
+    if (this.mappings[physicalId]) {
+      delete this.mappings[physicalId];
+      if (this.saveMappings()) {
+        Logger.info(`Machine mapping removed: Physical ${physicalId}`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  listMappings() {
+    return Object.values(this.mappings);
+  }
+
+  getMapping(physicalId) {
+    return this.mappings[physicalId];
+  }
+
+  validatePhysicalId(id) {
+    const num = parseInt(id);
+    return num >= 1 && num <= 63 && !this.mappings[id];
+  }
+}
+
+// API client for backend communication
+class APIClient {
+  constructor(config) {
+    this.baseURL = config.get('API_ENDPOINT');
+    this.token = config.get('MACHINE_TOKEN');
+    this.storeId = config.get('STORE_ID');
+  }
+
+  async registerMachine(machineConfig) {
+    if (!this.token) {
+      Logger.warn('No MACHINE_TOKEN configured, skipping API registration');
+      return { success: false, reason: 'no_token' };
+    }
+
+    try {
+      const data = {
+        machineId: machineConfig.logicalId,
+        storeId: this.storeId,
+        name: machineConfig.name,
+        gameType: machineConfig.gameType,
+        location: machineConfig.location || '',
+        status: 'active'
+      };
+
+      const response = await axios.post(`${this.baseURL}/api/machines`, data, {
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      });
+
+      Logger.info('Machine registered with backend API');
+      return { success: true, data: response.data };
+
+    } catch (error) {
+      Logger.warn(`Failed to register with backend API: ${error.message}`);
+      return { success: false, reason: error.message };
+    }
+  }
+
+  async testConnection() {
+    try {
+      const response = await axios.get(`${this.baseURL}/health`, { timeout: 5000 });
+      return response.status === 200;
+    } catch (error) {
+      return false;
+    }
+  }
+}
+
+// Interactive CLI interface
+class CLIInterface {
+  constructor() {
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+    
+    this.config = new ConfigManager();
+    this.mapper = new MachineMapper();
+    this.api = new APIClient(this.config);
+  }
+
+  async prompt(question) {
+    return new Promise(resolve => {
+      this.rl.question(question, resolve);
+    });
+  }
+
+  showBanner() {
+    console.clear();
+    console.log(colors.cyan + '┌────────────────────────────────────────────────────────┐' + colors.reset);
+    console.log(colors.cyan + '│' + colors.reset + '            ' + colors.bright + '🎰 GAMBINO PI MACHINE MANAGER' + colors.reset + '            ' + colors.cyan + '│' + colors.reset);
+    console.log(colors.cyan + '│' + colors.reset + '               ' + colors.yellow + 'Add & Configure Machines' + colors.reset + '                ' + colors.cyan + '│' + colors.reset);
+    console.log(colors.cyan + '└────────────────────────────────────────────────────────┘' + colors.reset);
+    console.log('');
+  }
+
+  async showMainMenu() {
+    this.showBanner();
+    
+    console.log(colors.bright + 'Select an option:' + colors.reset);
+    console.log('');
+    console.log(`  ${colors.green}1.${colors.reset} Add new machine`);
+    console.log(`  ${colors.green}2.${colors.reset} List configured machines`);
+    console.log(`  ${colors.green}3.${colors.reset} Remove machine`);
+    console.log(`  ${colors.green}4.${colors.reset} Bulk import machines`);
+    console.log(`  ${colors.green}5.${colors.reset} Export configuration`);
+    console.log(`  ${colors.green}6.${colors.reset} System diagnostics`);
+    console.log(`  ${colors.green}7.${colors.reset} Exit`);
+    console.log('');
+
+    const choice = await this.prompt(colors.bright + 'Choice (1-7): ' + colors.reset);
+    return choice.trim();
+  }
+
+  async addMachine() {
+    this.showBanner();
+    console.log(colors.cyan + colors.bright + '🔧 Machine Configuration' + colors.reset);
+    console.log(colors.cyan + '========================' + colors.reset);
+    console.log('');
+
+    try {
+      // Physical machine ID
+      const physicalId = await this.prompt(colors.bright + 'Physical machine number (1-63): ' + colors.reset);
+      
+      if (!this.mapper.validatePhysicalId(physicalId)) {
+        if (this.mapper.getMapping(physicalId)) {
+          Logger.error(`Physical ID ${physicalId} already exists`);
+        } else {
+          Logger.error('Invalid physical machine number. Must be 1-63.');
+        }
+        return false;
+      }
+
+      // Logical machine ID
+      const logicalId = await this.prompt(colors.bright + 'Logical machine ID (e.g., machine_01): ' + colors.reset);
+      if (!logicalId.trim()) {
+        Logger.error('Logical machine ID cannot be empty');
+        return false;
+      }
+
+      // Machine name
+      let machineName = await this.prompt(colors.bright + 'Machine name (optional): ' + colors.reset);
+      machineName = machineName.trim() || `Machine ${physicalId}`;
+
+      // Game type
+      console.log('');
+      console.log('Game types:');
+      console.log('1) Slot');
+      console.log('2) Poker'); 
+      console.log('3) Keno');
+      console.log('4) Other');
+      
+      const gameTypeChoice = await this.prompt(colors.bright + 'Select game type (1-4): ' + colors.reset);
+      let gameType = 'slot';
+      
+      switch (gameTypeChoice.trim()) {
+        case '2': gameType = 'poker'; break;
+        case '3': gameType = 'keno'; break;
+        case '4': 
+          gameType = await this.prompt(colors.bright + 'Enter custom game type: ' + colors.reset);
+          break;
+        default: gameType = 'slot';
+      }
+
+      // Location
+      const location = await this.prompt(colors.bright + 'Location/Area (optional): ' + colors.reset);
+
+      // Confirmation
+      console.log('');
+      console.log(colors.green + colors.bright + '📋 Configuration Summary' + colors.reset);
+      console.log(colors.green + '=========================' + colors.reset);
+      console.log(`Physical ID: ${physicalId}`);
+      console.log(`Logical ID:  ${logicalId}`);
+      console.log(`Name:        ${machineName}`);
+      console.log(`Game Type:   ${gameType}`);
+      console.log(`Location:    ${location || 'Not specified'}`);
+      console.log(`Store ID:    ${this.config.get('STORE_ID')}`);
+      console.log('');
+
+      const confirm = await this.prompt(colors.bright + 'Confirm configuration? (y/N): ' + colors.reset);
+      
+      if (!confirm.toLowerCase().startsWith('y')) {
+        Logger.info('Configuration cancelled');
+        return false;
+      }
+
+      // Add machine
+      const machineConfig = {
+        logicalId: logicalId.trim(),
+        name: machineName,
+        gameType: gameType.trim(),
+        location: location.trim(),
+        storeId: this.config.get('STORE_ID')
+      };
+
+      if (this.mapper.addMapping(physicalId, machineConfig)) {
+        // Register with API
+        const apiResult = await this.api.registerMachine(machineConfig);
+        
+        console.log('');
+        console.log(colors.green + colors.bright + '✅ Machine Added Successfully!' + colors.reset);
+        console.log(colors.cyan + `Physical ID ${physicalId} is now mapped to ${logicalId}` + colors.reset);
+        
+        // Show next steps
+        console.log('');
+        console.log(colors.yellow + colors.bright + '📋 Next Steps:' + colors.reset);
+        console.log('1. Restart Gambino Pi service: sudo systemctl restart gambino-pi');
+        console.log('2. Monitor logs: tail -f logs/combined.log');
+        console.log(`3. Test with physical machine ${physicalId}`);
+
+        return true;
+      } else {
+        Logger.error('Failed to add machine mapping');
+        return false;
+      }
+
+    } catch (error) {
+      Logger.error(`Configuration failed: ${error.message}`);
+      return false;
+    }
+  }
+
+  async listMachines() {
+    this.showBanner();
+    console.log(colors.blue + colors.bright + '📋 Configured Machines' + colors.reset);
+    console.log(colors.blue + '======================' + colors.reset);
+    console.log('');
+
+    const machines = this.mapper.listMappings();
+    
+    if (machines.length === 0) {
+      console.log('No machines configured yet.');
+      console.log('');
+      console.log('Use option 1 to add your first machine.');
+    } else {
+      console.log('Physical | Logical ID      | Name                 | Game Type | Location');
+      console.log('---------|-----------------|----------------------|-----------|------------------');
+      
+      machines.forEach(m => {
+        const physical = String(m.physicalId).padEnd(8);
+        const logical = String(m.logicalId).substring(0, 15).padEnd(15);
+        const name = String(m.name).substring(0, 20).padEnd(20);
+        const gameType = String(m.gameType).padEnd(9);
+        const location = String(m.location || '').substring(0, 18).padEnd(18);
+        console.log(`${physical} | ${logical} | ${name} | ${gameType} | ${location}`);
+      });
+    }
+
+    console.log('');
+    await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+  }
+
+  async removeMachine() {
+    this.showBanner();
+    console.log(colors.red + colors.bright + '🗑️  Remove Machine' + colors.reset);
+    console.log(colors.red + '==================' + colors.reset);
+    console.log('');
+
+    const machines = this.mapper.listMappings();
+    if (machines.length === 0) {
+      console.log('No machines configured to remove.');
+      await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+      return;
+    }
+
+    // Show current machines
+    console.log('Current machines:');
+    machines.forEach((m, i) => {
+      console.log(`${i + 1}. Physical ${m.physicalId} -> ${m.logicalId} (${m.name})`);
+    });
+    console.log('');
+
+    const physicalId = await this.prompt('Enter physical machine ID to remove: ');
+    const machine = this.mapper.getMapping(physicalId);
+    
+    if (!machine) {
+      Logger.error(`Machine with physical ID ${physicalId} not found`);
+      await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+      return;
+    }
+
+    console.log(`Machine to remove: ${machine.name} (${machine.logicalId})`);
+    const confirm = await this.prompt(colors.bright + 'Confirm removal? (y/N): ' + colors.reset);
+    
+    if (confirm.toLowerCase().startsWith('y')) {
+      if (this.mapper.removeMapping(physicalId)) {
+        console.log(colors.green + '✅ Machine removed successfully' + colors.reset);
+      } else {
+        console.log(colors.red + '❌ Failed to remove machine' + colors.reset);
+      }
+    } else {
+      Logger.info('Removal cancelled');
+    }
+
+    await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+  }
+
+  async bulkImport() {
+    console.log(colors.yellow + 'Bulk import functionality coming soon...' + colors.reset);
+    await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+  }
+
+  async exportConfig() {
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+    const exportFile = path.join(CONFIG.dataDir, `machine-export-${timestamp}.json`);
+    
+    try {
+      const exportData = {
+        timestamp: new Date().toISOString(),
+        storeId: this.config.get('STORE_ID'),
+        machineId: this.config.get('MACHINE_ID'),
+        mappings: this.mapper.mappings
+      };
+
+      fs.writeFileSync(exportFile, JSON.stringify(exportData, null, 2));
+      console.log(colors.green + `✅ Configuration exported to: ${exportFile}` + colors.reset);
+    } catch (error) {
+      Logger.error(`Export failed: ${error.message}`);
+    }
+
+    await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+  }
+
+  async systemDiagnostics() {
+    this.showBanner();
+    console.log(colors.blue + colors.bright + '🔍 System Diagnostics' + colors.reset);
+    console.log(colors.blue + '====================' + colors.reset);
+    console.log('');
+
+    // Check Node.js
+    Logger.info(`Node.js version: ${process.version}`);
+    
+    // Check configuration
+    Logger.info(`Machine ID: ${this.config.get('MACHINE_ID')}`);
+    Logger.info(`Store ID: ${this.config.get('STORE_ID')}`);
+    Logger.info(`API Endpoint: ${this.config.get('API_ENDPOINT')}`);
+    
+    // Check API connectivity
+    console.log('Testing API connectivity...');
+    const apiConnected = await this.api.testConnection();
+    if (apiConnected) {
+      Logger.info('API endpoint is reachable');
+    } else {
+      Logger.warn('API endpoint is not reachable');
+    }
+
+    // Check machine mappings
+    const machineCount = Object.keys(this.mapper.mappings).length;
+    Logger.info(`Configured machines: ${machineCount}`);
+
+    // Check files
+    const files = [
+      CONFIG.machineMapping,
+      CONFIG.envFile
+    ];
+
+    files.forEach(file => {
+      if (fs.existsSync(file)) {
+        Logger.info(`File exists: ${path.basename(file)}`);
+      } else {
+        Logger.warn(`File missing: ${path.basename(file)}`);
+      }
+    });
+
+    console.log('');
+    await this.prompt(colors.bright + 'Press Enter to continue...' + colors.reset);
+  }
+
+  async run() {
+    try {
+      while (true) {
+        const choice = await this.showMainMenu();
+        
+        switch (choice) {
+          case '1':
+            await this.addMachine();
+            break;
+          case '2':
+            await this.listMachines();
+            break;
+          case '3':
+            await this.removeMachine();
+            break;
+          case '4':
+            await this.bulkImport();
+            break;
+          case '5':
+            await this.exportConfig();
+            break;
+          case '6':
+            await this.systemDiagnostics();
+            break;
+          case '7':
+            console.log(colors.green + '👋 Goodbye!' + colors.reset);
+            this.rl.close();
+            return;
+          default:
+            console.log(colors.red + 'Invalid choice. Please select 1-7.' + colors.reset);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    } catch (error) {
+      Logger.error(`Application error: ${error.message}`);
+      this.rl.close();
+      process.exit(1);
+    }
+  }
+}
+
+// Handle CLI arguments
+function handleArgs() {
+  const args = process.argv.slice(2);
+  
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Gambino Pi - Machine Management CLI (Node.js)');
+    console.log('');
+    console.log('Usage: node addmachine.js [OPTIONS]');
+    console.log('');
+    console.log('Options:');
+    console.log('  --help, -h     Show this help message');
+    console.log('  --version      Show version information');
+    console.log('  --list         List configured machines');
+    console.log('  --export       Export configuration');
+    console.log('');
+    console.log('Interactive mode (default): node addmachine.js');
+    process.exit(0);
+  }
+
+  if (args.includes('--version')) {
+    console.log('Gambino Pi Machine Manager (Node.js) v1.0.0');
+    process.exit(0);
+  }
+
+  if (args.includes('--list')) {
+    const mapper = new MachineMapper();
+    const machines = mapper.listMappings();
+    console.log(JSON.stringify(machines, null, 2));
+    process.exit(0);
+  }
+
+  if (args.includes('--export')) {
+    const config = new ConfigManager();
+    const mapper = new MachineMapper();
+    const exportData = {
+      timestamp: new Date().toISOString(),
+      storeId: config.get('STORE_ID'),
+      machineId: config.get('MACHINE_ID'),
+      mappings: mapper.mappings
+    };
+    console.log(JSON.stringify(exportData, null, 2));
+    process.exit(0);
+  }
+}
+
+// Main execution
+if (require.main === module) {
+  handleArgs();
+  
+  const cli = new CLIInterface();
+  cli.run().catch(error => {
+    Logger.error(`Fatal error: ${error.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { ConfigManager, MachineMapper, APIClient };

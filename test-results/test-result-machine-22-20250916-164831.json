@@ -1,0 +1,31 @@
+{
+  "testInfo": {
+    "physicalMachineId": 22,
+    "testTimestamp": "2025-09-16T16:48:31-04:00",
+    "testStatus": "PASSED",
+    "testerVersion": "1.0.0"
+  },
+  "machineMapping": {
+  "physicalId": 22,
+  "logicalId": "machine_22",
+  "name": "SuperDuper Machine!",
+  "gameType": "slot",
+  "location": "Ceiling",
+  "storeId": "store_1755939573684",
+  "status": "active",
+  "addedAt": "2025-09-16T16:47:34-04:00",
+  "lastSeen": null
+},
+  "testResults": {
+    "mappingExists": true,
+    "logicalIdValid": true,
+    "parsingTest": "passed",
+    "apiSimulation": "completed"
+  },
+  "recommendations": [
+    
+    
+    "Monitor real serial data to verify mapping accuracy",
+    "Test with actual hardware when available"
+  ]
+}
