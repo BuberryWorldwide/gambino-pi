@@ -37,32 +37,64 @@ class ApiClient {
     }
   }
 
-  async sendEvent(event) {
-    try {
-      // Add to queue first for reliability
-      this.eventQueue.add(event);
-      
-      const response = await this.api.post('/api/edge/events', {
+  // Enhanced sendEvent method with detailed logging
+async sendEvent(event) {
+  try {
+    // Add to queue first for reliability
+    this.eventQueue.add(event);
+    
+    // ✅ ADD DETAILED LOGGING
+    console.log('🔍 Sending event to backend:', {
+      eventType: event.eventType,
+      machineId: event.machineId,  // This should be machine_01, machine_03, etc.
+      amount: event.amount,
+      timestamp: event.timestamp
+    });
+    
+    const payload = {
+      eventType: event.eventType,
+      amount: event.amount,
+      timestamp: event.timestamp,
+      machineId: event.machineId,  // ✅ Make sure this is included
+      rawData: event.rawData,  // ✅ Move rawData to top level for backend parsing
+      metadata: {
+        // Additional metadata can go here
+        piVersion: process.version,
+        hubId: this.config.get('machineId')
+      }
+    };
+    
+    // ✅ LOG THE EXACT PAYLOAD BEING SENT
+    console.log('📤 Payload being sent to /api/edge/events:', JSON.stringify(payload, null, 2));
+    
+    const response = await this.api.post('/api/edge/events', payload);
+
+    // Remove from queue on success
+    this.eventQueue.markComplete(event);
+    
+    // ✅ LOG SUCCESSFUL RESPONSE
+    console.log(`✅ Event sent successfully: ${event.eventType} from ${event.machineId}`);
+    console.log('📥 Backend response:', response.data);
+    
+    return response.data;
+
+  } catch (error) {
+    // ✅ ENHANCED ERROR LOGGING
+    console.error(`❌ Failed to send event ${event.eventType} from ${event.machineId}:`, {
+      error: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+      payload: {
         eventType: event.eventType,
-        amount: event.amount,
-        timestamp: event.timestamp,
         machineId: event.machineId,
-        metadata: {
-          rawData: event.rawData
-        }
-      });
-
-      // Remove from queue on success
-      this.eventQueue.markComplete(event);
-      logger.info(`📤 Event sent successfully: ${event.eventType}`);
-      return response.data;
-
-    } catch (error) {
-      logger.error(`Failed to send event ${event.eventType}:`, error.message);
-      // Event remains in queue for retry
-      throw error;
-    }
+        amount: event.amount
+      }
+    });
+    
+    // Event remains in queue for retry
+    throw error;
   }
+}
 
   async sendSession(session) {
     try {

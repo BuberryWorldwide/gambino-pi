@@ -1,14 +1,15 @@
+// src/serial/dataParser.js
 const logger = require('../utils/logger');
 
 class DataParser {
   constructor() {
-    // Patterns for Mutha Goose printer output based on your mock data
+    // Fixed patterns to match your exact mock data format
     this.patterns = {
-      voucher: /VOUCHER PRINT:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s*(\d+)/i,
-      moneyIn: /MONEY IN:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s*(\d+)/i,
-      collect: /COLLECT:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s*(\d+)/i,
-      sessionStart: /SESSION START\s*-\s*MACHINE\s*(\d+)/i,
-      sessionEnd: /SESSION END\s*-\s*MACHINE\s*(\d+)/i
+      voucher: /VOUCHER PRINT:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s+(\d+)/i,
+      moneyIn: /MONEY IN:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s+(\d+)/i,
+      collect: /COLLECT:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s+(\d+)/i,
+      sessionStart: /SESSION START\s*-\s*MACHINE\s+(\d+)/i,
+      sessionEnd: /SESSION END\s*-\s*MACHINE\s+(\d+)/i
     };
   }
 
@@ -17,86 +18,59 @@ class DataParser {
       const timestamp = new Date().toISOString();
       const trimmedData = rawData.trim();
       
-      logger.debug(`🔍 Parsing: ${trimmedData}`);
+      logger.debug(`🔍 Parsing raw data: "${trimmedData}"`);
 
-      // Extract machine number for all event types
-      const machineMatch = trimmedData.match(/MACHINE\s*(\d+)/i);
-      const machineNumber = machineMatch ? machineMatch[1] : '00';
-      const gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
-
-      // Check for voucher events
-      const voucherMatch = trimmedData.match(this.patterns.voucher);
-      if (voucherMatch) {
-        return {
-          eventType: 'voucher',
-          amount: voucherMatch[1],
-          machineId: gamingMachineId,
-          gamingMachineId,
-          timestamp,
-          rawData: trimmedData
-        };
+      // Check each pattern type
+      for (const [eventType, pattern] of Object.entries(this.patterns)) {
+        const match = trimmedData.match(pattern);
+        if (match) {
+          let machineNumber, amount, gamingMachineId;
+          
+          if (eventType === 'sessionStart' || eventType === 'sessionEnd') {
+            // Session events: match[1] is machine number
+            machineNumber = match[1];
+            gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
+            
+            logger.debug(`🎯 Matched ${eventType}: machine ${machineNumber} -> ${gamingMachineId}`);
+            
+            return {
+              eventType: eventType === 'sessionStart' ? 'session_start' : 'session_end',
+              action: eventType === 'sessionStart' ? 'start' : 'end',
+              sessionId: this.generateSessionId(machineNumber),
+              machineId: gamingMachineId,
+              gamingMachineId,
+              timestamp,
+              rawData: trimmedData
+            };
+          } else {
+            // Money events: match[1] is amount, match[2] is machine number
+            amount = match[1];
+            machineNumber = match[2];
+            gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
+            
+            logger.debug(`🎯 Matched ${eventType}: $${amount} from machine ${machineNumber} -> ${gamingMachineId}`);
+            
+            return {
+              eventType: eventType === 'moneyIn' ? 'money_in' : eventType,
+              amount: parseFloat(amount),
+              machineId: gamingMachineId,
+              gamingMachineId,
+              timestamp,
+              rawData: trimmedData
+            };
+          }
+        }
       }
 
-      // Check for money in events  
-      const moneyInMatch = trimmedData.match(this.patterns.moneyIn);
-      if (moneyInMatch) {
-        return {
-          eventType: 'money_in',
-          amount: moneyInMatch[1],
-          machineId: gamingMachineId,
-          gamingMachineId,
-          timestamp,
-          rawData: trimmedData
-        };
-      }
-
-      // Check for collect events
-      const collectMatch = trimmedData.match(this.patterns.collect);
-      if (collectMatch) {
-        return {
-          eventType: 'collect',
-          amount: collectMatch[1],
-          machineId: gamingMachineId,
-          gamingMachineId,
-          timestamp,
-          rawData: trimmedData
-        };
-      }
-
-      // Check for session start
-      const sessionStartMatch = trimmedData.match(this.patterns.sessionStart);
-      if (sessionStartMatch) {
-        return {
-          eventType: 'session_start',
-          action: 'start',
-          sessionId: this.generateSessionId(sessionStartMatch[1]),
-          machineId: gamingMachineId,
-          gamingMachineId,
-          timestamp,
-          rawData: trimmedData
-        };
-      }
-
-      // Check for session end
-      const sessionEndMatch = trimmedData.match(this.patterns.sessionEnd);
-      if (sessionEndMatch) {
-        return {
-          eventType: 'session_end',
-          action: 'end', 
-          sessionId: this.generateSessionId(sessionEndMatch[1]),
-          machineId: gamingMachineId,
-          gamingMachineId,
-          timestamp,
-          rawData: trimmedData
-        };
-      }
-
-      // If no patterns match, log for analysis
-      logger.debug(`🔍 Unrecognized data pattern: ${trimmedData}`);
+      // If no patterns match, log the data for debugging
+      logger.warn(`🚫 No pattern matched for: "${trimmedData}"`);
+      logger.debug('Available patterns:', Object.keys(this.patterns));
+      
       return null;
 
     } catch (error) {
       logger.error('Error parsing data:', error);
+      logger.error('Raw data that caused error:', rawData);
       return null;
     }
   }
@@ -105,23 +79,21 @@ class DataParser {
     return `session_${machineNumber}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  // Method to add new parsing patterns for different Mutha Goose formats
-  addPattern(name, regex) {
-    this.patterns[name] = regex;
-    logger.info(`Added new parsing pattern: ${name}`);
-  }
-
-  // Extract machine ID from any raw data string
+  // Extract machine ID from any raw data string (fallback method)
   extractMachineId(rawData) {
-    const machineMatch = rawData.match(/MACHINE\s*(\d+)/i);
-    return machineMatch ? `machine_${machineMatch[1].padStart(2, '0')}` : null;
+    const machineMatch = rawData.match(/MACHINE\s+(\d+)/i);
+    if (machineMatch) {
+      const machineNumber = machineMatch[1].padStart(2, '0');
+      return `machine_${machineNumber}`;
+    }
+    return null;
   }
 
   // Validate parsed event data
   validateEvent(event) {
     if (!event) return false;
     
-    const requiredFields = ['eventType', 'timestamp', 'rawData'];
+    const requiredFields = ['eventType', 'timestamp', 'rawData', 'machineId'];
     const hasRequired = requiredFields.every(field => event[field]);
     
     if (!hasRequired) {

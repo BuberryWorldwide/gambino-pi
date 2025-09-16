@@ -1,7 +1,11 @@
-#!/usr/bin/env node
+// tests/mockMuthaGoose.js
+// Mock Mutha Goose data generator that works with serialMonitor.js
+
+const logger = require('../src/utils/logger');
 
 class MockMuthaGoose {
   constructor() {
+    this.machines = [69]; // Your test machines
     this.isRunning = false;
     this.interval = null;
   }
@@ -9,73 +13,103 @@ class MockMuthaGoose {
   start() {
     if (this.isRunning) return;
     
-    console.log('🎮 Starting Mock Mutha Goose data generator...');
-    console.log('📡 Generating events every 5-15 seconds...');
+    console.log('🎮 Starting Simple Mock Mutha Goose...');
+    console.log(`📋 Testing with machines: ${this.machines.join(', ')}`);
+    console.log('📡 Generating events every 4-12 seconds...');
     console.log('Press Ctrl+C to stop\n');
+    
     this.isRunning = true;
     
-    this.interval = setInterval(() => {
-      this.generateRandomEvent();
-    }, Math.random() * 10000 + 5000);
+    // Generate first event after a short delay
+    setTimeout(() => {
+      if (this.isRunning) {
+        this.generateRandomEvent();
+        this.scheduleNext();
+      }
+    }, 2000);
+  }
+
+  scheduleNext() {
+    if (!this.isRunning) return;
+    
+    const delay = Math.random() * 8000 + 4000; // 4-12 seconds
+    this.interval = setTimeout(() => {
+      if (this.isRunning) {
+        this.generateRandomEvent();
+        this.scheduleNext();
+      }
+    }, delay);
+  }
+
+  // This is the method that serialMonitor.js expects to exist
+  generateRandomEvent() {
+    if (!this.isRunning) return null;
+    
+    const machine = this.machines[Math.floor(Math.random() * this.machines.length)];
+    const eventTypes = [
+      () => this.generateVoucher(machine),
+      () => this.generateMoneyIn(machine),
+      () => this.generateCollect(machine),
+      () => this.generateSessionStart(machine),
+      () => this.generateSessionEnd(machine)
+    ];
+    
+    const eventGenerator = eventTypes[Math.floor(Math.random() * eventTypes.length)];
+    const eventData = eventGenerator();
+    
+    // Format the output to match your logs
+    const time = new Date().toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
+    
+    console.log(`🎲 ${time} - ${eventData}`);
+    
+    return eventData;
+  }
+
+  generateVoucher(machine) {
+    const amount = (Math.random() * 300 + 50).toFixed(2);
+    return `VOUCHER PRINT: $${amount} - MACHINE ${machine}`;
+  }
+
+  generateMoneyIn(machine) {
+    const amount = (Math.random() * 50 + 5).toFixed(2);
+    return `MONEY IN: $${amount} - MACHINE ${machine}`;
+  }
+
+  generateCollect(machine) {
+    const amount = (Math.random() * 200 + 20).toFixed(2);
+    return `COLLECT: $${amount} - MACHINE ${machine}`;
+  }
+
+  generateSessionStart(machine) {
+    return `SESSION START - MACHINE ${machine}`;
+  }
+
+  generateSessionEnd(machine) {
+    return `SESSION END - MACHINE ${machine}`;
   }
 
   stop() {
+    this.isRunning = false;
     if (this.interval) {
-      clearInterval(this.interval);
+      clearTimeout(this.interval);
       this.interval = null;
     }
-    this.isRunning = false;
-    console.log('\n🛑 Mock Mutha Goose stopped');
-  }
-
-  generateRandomEvent() {
-    const events = [
-      this.generateVoucherEvent(),
-      this.generateMoneyInEvent(), 
-      this.generateCollectEvent(),
-      this.generateSessionStart(),
-      this.generateSessionEnd()
-    ];
-    
-    const event = events[Math.floor(Math.random() * events.length)];
-    console.log(`🎲 ${new Date().toLocaleTimeString()} - ${event}`);
-    return event;
-  }
-
-  generateVoucherEvent() {
-    const amount = (Math.random() * 500 + 10).toFixed(2);
-    const machine = Math.floor(Math.random() * 99) + 1;
-    return `VOUCHER PRINT: $${amount} - MACHINE ${machine.toString().padStart(2, '0')}`;
-  }
-
-  generateMoneyInEvent() {
-    const amount = (Math.random() * 100 + 5).toFixed(2);
-    const machine = Math.floor(Math.random() * 99) + 1;
-    return `MONEY IN: $${amount} - MACHINE ${machine.toString().padStart(2, '0')}`;
-  }
-
-  generateCollectEvent() {
-    const amount = (Math.random() * 200 + 20).toFixed(2);
-    const machine = Math.floor(Math.random() * 99) + 1;
-    return `COLLECT: $${amount} - MACHINE ${machine.toString().padStart(2, '0')}`;
-  }
-
-  generateSessionStart() {
-    const machine = Math.floor(Math.random() * 99) + 1;
-    return `SESSION START - MACHINE ${machine.toString().padStart(2, '0')}`;
-  }
-
-  generateSessionEnd() {
-    const machine = Math.floor(Math.random() * 99) + 1;
-    return `SESSION END - MACHINE ${machine.toString().padStart(2, '0')}`;
+    console.log('\n🛑 Simple Mock Mutha Goose stopped');
   }
 }
 
+// Export for use as module or run standalone
 if (require.main === module) {
   const mock = new MockMuthaGoose();
   mock.start();
   
   process.on('SIGINT', () => {
+    console.log('\n🛑 Stopping mock generator...');
     mock.stop();
     process.exit(0);
   });
