@@ -1,0 +1,1 @@
+sudo tailscale up --reset --authkey=tskey-auth-ktB8SpvNi321CNTRL-2ZeGc7bncsTEin4obRnasTb8Nwq3hVe4E --hostname=va-pi-01-pilot --accept-routes --accept-risk=lose-ssh

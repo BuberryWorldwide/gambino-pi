@@ -1,115 +1,149 @@
-// tests/mockMuthaGoose.js
-// Mock Mutha Goose data generator that works with serialMonitor.js
+#!/usr/bin/env node
 
-const logger = require('../src/utils/logger');
+// Mock Mutha Goose - REALISTIC version based on actual Richmond Hot Streak data
+// Only generates what the real Mutha Goose actually sends
 
 class MockMuthaGoose {
   constructor() {
-    this.machines = [69]; // Your test machines
     this.isRunning = false;
-    this.interval = null;
+    this.voucherInterval = null;
+    this.summaryInterval = null;
+    // Richmond Hot Streak actual machine numbers
+    this.machines = [29, 30, 31, 32, 33, 34, 35, 36];
+    // Track daily totals for realistic summaries
+    this.dailyTotals = {};
+    this.machines.forEach(m => this.dailyTotals[m] = 0);
   }
 
   start() {
     if (this.isRunning) return;
     
-    console.log('🎮 Starting Simple Mock Mutha Goose...');
-    console.log(`📋 Testing with machines: ${this.machines.join(', ')}`);
-    console.log('📡 Generating events every 4-12 seconds...');
+    console.log('Mock Mutha Goose - REALISTIC Mode');
+    console.log('=================================');
+    console.log('Richmond Hot Streak Location');
+    console.log(`Machines: ${this.machines.join(', ')}`);
+    console.log('');
+    console.log('DATA TYPES GENERATED:');
+    console.log('1. Voucher prints (random, 30-90 sec intervals)');
+    console.log('2. Daily summaries (every 5 minutes, simulating manual button press)');
+    console.log('');
+    console.log('NOTE: Real Mutha Goose does NOT send:');
+    console.log('- Money in events');
+    console.log('- Collect events');
+    console.log('- Session events');
+    console.log('');
     console.log('Press Ctrl+C to stop\n');
     
     this.isRunning = true;
     
-    // Generate first event after a short delay
-    setTimeout(() => {
-      if (this.isRunning) {
-        this.generateRandomEvent();
-        this.scheduleNext();
-      }
-    }, 2000);
+    // Vouchers come randomly (players cashing out)
+    this.scheduleNextVoucher();
+    
+    // Daily summaries every 5 minutes (simulating someone pressing the report button)
+    this.summaryInterval = setInterval(() => {
+      this.generateDailySummaries();
+    }, 5 * 60 * 1000); // 5 minutes
   }
 
-  scheduleNext() {
+  scheduleNextVoucher() {
     if (!this.isRunning) return;
     
-    const delay = Math.random() * 8000 + 4000; // 4-12 seconds
-    this.interval = setTimeout(() => {
+    // Random delay between 30-90 seconds (realistic voucher frequency)
+    const delay = Math.random() * 60000 + 30000;
+    
+    this.voucherInterval = setTimeout(() => {
       if (this.isRunning) {
-        this.generateRandomEvent();
-        this.scheduleNext();
+        this.generateVoucherEvent();
+        this.scheduleNextVoucher();
       }
     }, delay);
   }
 
-  // This is the method that serialMonitor.js expects to exist
+  stop() {
+    if (this.voucherInterval) {
+      clearTimeout(this.voucherInterval);
+      this.voucherInterval = null;
+    }
+    if (this.summaryInterval) {
+      clearInterval(this.summaryInterval);
+      this.summaryInterval = null;
+    }
+    this.isRunning = false;
+    console.log('\nMock Mutha Goose stopped');
+  }
+
+  getRandomMachine() {
+    return this.machines[Math.floor(Math.random() * this.machines.length)];
+  }
+
+  // Called by serialMonitor when integrated in development mode
   generateRandomEvent() {
-    if (!this.isRunning) return null;
+    // 80% vouchers, 20% daily summaries
+    if (Math.random() < 0.8) {
+      return this.generateVoucherEvent();
+    } else {
+      // For single event call, return one machine's summary
+      const machineNum = this.getRandomMachine();
+      const amount = this.dailyTotals[machineNum];
+      return `Daily Summary - Machine ${machineNum} - $${amount} in`;
+    }
+  }
+
+  generateVoucherEvent() {
+    const machineNum = this.getRandomMachine();
+    const voucherNum = Math.floor(Math.random() * 90000) + 10000;
     
-    const machine = this.machines[Math.floor(Math.random() * this.machines.length)];
-    const eventTypes = [
-      () => this.generateVoucher(machine),
-      () => this.generateMoneyIn(machine),
-      () => this.generateCollect(machine),
-      () => this.generateSessionStart(machine),
-      () => this.generateSessionEnd(machine)
-    ];
+    // Typical voucher amounts in plays (usually 1-50 plays)
+    const plays = Math.random() < 0.7 
+      ? Math.floor(Math.random() * 10) + 1  // 70% chance: 1-10 plays (small wins)
+      : Math.floor(Math.random() * 40) + 10; // 30% chance: 10-50 plays (bigger wins)
     
-    const eventGenerator = eventTypes[Math.floor(Math.random() * eventTypes.length)];
-    const eventData = eventGenerator();
+    const points = plays; // Points typically match plays
     
-    // Format the output to match your logs
-    const time = new Date().toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true
+    // Track for daily summary
+    this.dailyTotals[machineNum] += plays;
+    
+    const event = `Voucher #${voucherNum} - ${plays} plays - ${points} points - Machine ${machineNum}`;
+    
+    // Only log if running standalone (not integrated with serialMonitor)
+    if (require.main === module) {
+      const time = new Date().toLocaleTimeString();
+      console.log(`${time} - VOUCHER OUT: ${event}`);
+    }
+    
+    return event;
+  }
+
+  generateDailySummaries() {
+    if (require.main === module) {
+      console.log('\n--- DAILY SUMMARY REPORT (Button Pressed) ---');
+      const time = new Date().toLocaleTimeString();
+      console.log(`${time} - Generating summaries for all machines...\n`);
+    }
+    
+    this.machines.forEach(machineNum => {
+      const amount = this.dailyTotals[machineNum];
+      const event = `Daily Summary - Machine ${machineNum} - $${amount} in`;
+      
+      if (require.main === module) {
+        console.log(`  ${event}`);
+      }
     });
     
-    console.log(`🎲 ${time} - ${eventData}`);
-    
-    return eventData;
-  }
-
-  generateVoucher(machine) {
-    const amount = (Math.random() * 300 + 50).toFixed(2);
-    return `VOUCHER PRINT: $${amount} - MACHINE ${machine}`;
-  }
-
-  generateMoneyIn(machine) {
-    const amount = (Math.random() * 50 + 5).toFixed(2);
-    return `MONEY IN: $${amount} - MACHINE ${machine}`;
-  }
-
-  generateCollect(machine) {
-    const amount = (Math.random() * 200 + 20).toFixed(2);
-    return `COLLECT: $${amount} - MACHINE ${machine}`;
-  }
-
-  generateSessionStart(machine) {
-    return `SESSION START - MACHINE ${machine}`;
-  }
-
-  generateSessionEnd(machine) {
-    return `SESSION END - MACHINE ${machine}`;
-  }
-
-  stop() {
-    this.isRunning = false;
-    if (this.interval) {
-      clearTimeout(this.interval);
-      this.interval = null;
+    if (require.main === module) {
+      console.log('--- End of Daily Summary ---\n');
     }
-    console.log('\n🛑 Simple Mock Mutha Goose stopped');
+    
+    // Reset daily totals after report
+    this.machines.forEach(m => this.dailyTotals[m] = 0);
   }
 }
 
-// Export for use as module or run standalone
 if (require.main === module) {
   const mock = new MockMuthaGoose();
   mock.start();
   
   process.on('SIGINT', () => {
-    console.log('\n🛑 Stopping mock generator...');
     mock.stop();
     process.exit(0);
   });

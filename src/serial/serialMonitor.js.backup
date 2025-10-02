@@ -13,7 +13,6 @@ class SerialMonitor extends EventEmitter {
     this.dataParser = new DataParser();
     this.isConnected = false;
     this.isDevelopmentMode = process.env.NODE_ENV === 'development';
-    this.mockInterval = null;
   }
 
   async start() {
@@ -37,26 +36,16 @@ class SerialMonitor extends EventEmitter {
     const MockMuthaGoose = require('../../tests/mockMuthaGoose');
     this.mockGenerator = new MockMuthaGoose();
     
-    // Don't call start() - we'll control the timing ourselves
-    this.isConnected = true;
-    this.emit('connected');
-    
-    // Generate mock events every 5-15 seconds
-    const generateEvent = () => {
-      const mockData = this.mockGenerator.generateRandomEvent();
-      if (mockData) {
-        this.processData(mockData);
-      }
-      
-      // Schedule next event with random delay
-      const delay = Math.random() * 10000 + 5000; // 5-15 seconds
-      this.mockInterval = setTimeout(generateEvent, delay);
+    // Override the mock generator to emit events instead of just logging
+    const originalGenerate = this.mockGenerator.generateRandomEvent.bind(this.mockGenerator);
+    this.mockGenerator.generateRandomEvent = () => {
+      const mockData = originalGenerate();
+      this.processData(mockData);
     };
     
-    // Start generating events
-    generateEvent();
-    
-    logger.info('📡 Mock data generator active (5-15 sec intervals)');
+    this.mockGenerator.start();
+    this.isConnected = true;
+    this.emit('connected');
   }
 
   async connect() {
@@ -132,12 +121,6 @@ class SerialMonitor extends EventEmitter {
   }
 
   async stop() {
-    // Clean up mock interval if in development mode
-    if (this.isDevelopmentMode && this.mockInterval) {
-      clearTimeout(this.mockInterval);
-      this.mockInterval = null;
-    }
-    
     if (this.isDevelopmentMode && this.mockGenerator) {
       this.mockGenerator.stop();
     }
