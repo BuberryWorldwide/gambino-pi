@@ -113,3 +113,7 @@ data/
 *.db*
 *.shm
 *.wal
+deploy-package/
+*.tar.gz
+*.backup
+*.bak
