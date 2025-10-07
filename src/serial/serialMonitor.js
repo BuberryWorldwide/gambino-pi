@@ -9,9 +9,11 @@ class SerialMonitor extends EventEmitter {
     super();
     this.config = config;
     this.serialPort = null;
+    this.printerPort = null;
     this.parser = null;
     this.dataParser = new DataParser();
     this.isConnected = false;
+    this.printerConnected = false;
     this.isDevelopmentMode = process.env.NODE_ENV === 'development';
     this.mockInterval = null;
   }
@@ -23,6 +25,7 @@ class SerialMonitor extends EventEmitter {
         this.startMockMode();
       } else {
         await this.connect();
+        await this.connectPrinter();
         this.setupDataHandling();
       }
       logger.info(`📡 Serial monitor started`);
@@ -33,27 +36,22 @@ class SerialMonitor extends EventEmitter {
   }
 
   startMockMode() {
-    // In development, simulate serial data using our mock generator
     const MockMuthaGoose = require('../../tests/mockMuthaGoose');
     this.mockGenerator = new MockMuthaGoose();
     
-    // Don't call start() - we'll control the timing ourselves
     this.isConnected = true;
     this.emit('connected');
     
-    // Generate mock events every 5-15 seconds
     const generateEvent = () => {
       const mockData = this.mockGenerator.generateRandomEvent();
       if (mockData) {
         this.processData(mockData);
       }
       
-      // Schedule next event with random delay
-      const delay = Math.random() * 10000 + 5000; // 5-15 seconds
+      const delay = Math.random() * 10000 + 5000;
       this.mockInterval = setTimeout(generateEvent, delay);
     };
     
-    // Start generating events
     generateEvent();
     
     logger.info('📡 Mock data generator active (5-15 sec intervals)');
@@ -100,7 +98,65 @@ class SerialMonitor extends EventEmitter {
     });
   }
 
+  async connectPrinter() {
+    const printerPath = this.config.get('printerPort');
+    
+    // If no printer port configured, skip
+    if (!printerPath) {
+      logger.info('No printer port configured, skipping printer pass-through');
+      return;
+    }
+
+    const baudRate = this.config.get('serialBaud');
+
+    return new Promise((resolve, reject) => {
+      this.printerPort = new SerialPort({
+        path: printerPath,
+        baudRate: baudRate,
+        dataBits: 8,
+        stopBits: 1,
+        parity: 'none',
+        autoOpen: false
+      });
+
+      this.printerPort.open((err) => {
+        if (err) {
+          logger.warn(`Failed to open printer port ${printerPath}:`, err);
+          logger.warn('Continuing without printer pass-through');
+          this.printerPort = null;
+          resolve(); // Don't reject - continue without printer
+        } else {
+          this.printerConnected = true;
+          logger.info(`🖨️ Printer port ${printerPath} opened successfully`);
+          resolve();
+        }
+      });
+
+      this.printerPort.on('error', (err) => {
+        logger.error('Printer port error:', err);
+        this.printerConnected = false;
+      });
+
+      this.printerPort.on('close', () => {
+        logger.warn('Printer port closed');
+        this.printerConnected = false;
+      });
+    });
+  }
+
   setupDataHandling() {
+    // Forward RAW data to printer BEFORE parsing
+    this.serialPort.on('data', (rawData) => {
+      if (this.printerPort && this.printerConnected) {
+        this.printerPort.write(rawData, (err) => {
+          if (err) {
+            logger.error('Error writing to printer:', err);
+          }
+        });
+      }
+    });
+
+    // Parse data for backend (separate stream)
     this.parser = this.serialPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
     
     this.parser.on('data', (data) => {
@@ -119,7 +175,6 @@ class SerialMonitor extends EventEmitter {
       if (parsedEvent) {
         logger.info(`🎯 Parsed event: ${parsedEvent.eventType} from ${parsedEvent.machineId}`);
         
-        // Emit different events based on type
         if (parsedEvent.eventType.includes('session')) {
           this.emit('sessionEvent', parsedEvent);
         } else {
@@ -132,7 +187,6 @@ class SerialMonitor extends EventEmitter {
   }
 
   async stop() {
-    // Clean up mock interval if in development mode
     if (this.isDevelopmentMode && this.mockInterval) {
       clearTimeout(this.mockInterval);
       this.mockInterval = null;
@@ -143,13 +197,38 @@ class SerialMonitor extends EventEmitter {
     }
     
     return new Promise((resolve) => {
+      let closedCount = 0;
+      const totalPorts = (this.serialPort ? 1 : 0) + (this.printerPort ? 1 : 0);
+      
+      if (totalPorts === 0) {
+        resolve();
+        return;
+      }
+
+      const checkComplete = () => {
+        closedCount++;
+        if (closedCount === totalPorts) {
+          logger.info('All ports closed');
+          resolve();
+        }
+      };
+
       if (this.serialPort && this.serialPort.isOpen) {
         this.serialPort.close(() => {
           logger.info('Serial port closed');
-          resolve();
+          checkComplete();
         });
       } else {
-        resolve();
+        checkComplete();
+      }
+
+      if (this.printerPort && this.printerPort.isOpen) {
+        this.printerPort.close(() => {
+          logger.info('Printer port closed');
+          checkComplete();
+        });
+      } else if (this.printerPort) {
+        checkComplete();
       }
     });
   }
@@ -157,7 +236,9 @@ class SerialMonitor extends EventEmitter {
   getStatus() {
     return {
       connected: this.isConnected,
+      printerConnected: this.printerConnected,
       port: this.config.get('serialPort'),
+      printerPort: this.config.get('printerPort'),
       developmentMode: this.isDevelopmentMode
     };
   }

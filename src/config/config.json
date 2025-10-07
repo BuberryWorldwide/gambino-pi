@@ -4,6 +4,7 @@
   "apiEndpoint": "https://api.gambino.gold",
   "machineToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJtYWNoaW5lSWQiOiJnYW1iaW5vLXBpLTAwMSIsInN0b3JlSWQiOiJzdG9yZV8xNzU1OTM5NTczNjg0IiwidHlwZSI6ImVkZ2VfZGV2aWNlIiwiaWF0IjoxNzU4MDQ5NDIzLCJleHAiOjE3ODk1ODU0MjN9.9jg2ZHRelDRSdoS155T5HNtPFBPbd15RGHwFPgr0D94",
   "serialPort": "/dev/ttyUSB0",
+  "printerPort": "/dev/ttyUSB1",
   "serialBaud": 9600,
   "heartbeatInterval": 30000,
   "retryAttempts": 3,
