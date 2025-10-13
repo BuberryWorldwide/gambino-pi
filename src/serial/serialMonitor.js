@@ -101,7 +101,6 @@ class SerialMonitor extends EventEmitter {
   async connectPrinter() {
     const printerPath = this.config.get('printerPort');
     
-    // If no printer port configured, skip
     if (!printerPath) {
       logger.info('No printer port configured, skipping printer pass-through');
       return;
@@ -124,7 +123,7 @@ class SerialMonitor extends EventEmitter {
           logger.warn(`Failed to open printer port ${printerPath}:`, err);
           logger.warn('Continuing without printer pass-through');
           this.printerPort = null;
-          resolve(); // Don't reject - continue without printer
+          resolve();
         } else {
           this.printerConnected = true;
           logger.info(`🖨️ Printer port ${printerPath} opened successfully`);
@@ -145,8 +144,13 @@ class SerialMonitor extends EventEmitter {
   }
 
   setupDataHandling() {
-    // Forward RAW data to printer BEFORE parsing
+    // DUAL PARSING APPROACH:
+    // 1. Raw buffer parsing for vouchers (buffer-based)
+    // 2. Line-based parsing for daily reports (readline-based)
+    
+    // RAW DATA HANDLER - for voucher detection and printer passthrough
     this.serialPort.on('data', (rawData) => {
+      // 1. Forward to printer FIRST (before any processing)
       if (this.printerPort && this.printerConnected) {
         this.printerPort.write(rawData, (err) => {
           if (err) {
@@ -154,20 +158,47 @@ class SerialMonitor extends EventEmitter {
           }
         });
       }
+      
+      // 2. Try buffer-based voucher parsing
+      const voucherEvent = this.dataParser.parseBuffer(rawData);
+      if (voucherEvent) {
+        logger.info(`🎯 Parsed voucher: ${voucherEvent.eventType} from ${voucherEvent.machineId}`);
+        this.emit('muthaEvent', voucherEvent);
+      }
     });
 
-    // Parse data for backend (separate stream)
+    // LINE-BASED HANDLER - for daily reports and other line-based events
     this.parser = this.serialPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
     
     this.parser.on('data', (data) => {
       const trimmedData = data.toString().trim();
       if (trimmedData) {
-        logger.debug(`📥 Raw serial data: ${trimmedData}`);
-        this.processData(trimmedData);
+        logger.debug(`📥 Line: ${trimmedData.substring(0, 60)}...`);
+        this.processLineData(trimmedData);
       }
     });
   }
 
+  processLineData(rawData) {
+    try {
+      // Use line-based parser for daily reports and legacy events
+      const parsedEvent = this.dataParser.parse(rawData);
+      
+      if (parsedEvent) {
+        logger.info(`🎯 Parsed event: ${parsedEvent.eventType} from ${parsedEvent.machineId}`);
+        
+        if (parsedEvent.eventType.includes('session')) {
+          this.emit('sessionEvent', parsedEvent);
+        } else {
+          this.emit('muthaEvent', parsedEvent);
+        }
+      }
+    } catch (error) {
+      logger.error('Error processing line data:', error);
+    }
+  }
+
+  // Keep for backwards compatibility with mock mode
   processData(rawData) {
     try {
       const parsedEvent = this.dataParser.parse(rawData);
