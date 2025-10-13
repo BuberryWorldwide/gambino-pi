@@ -24,8 +24,12 @@ class DataParser {
 
   parseBuffer(data) {
     const machineHex = Buffer.from('MACHINE', 'ascii');
+    const voucherHex = Buffer.from('Voucher', 'ascii');
+    const text = data.toString('ascii');
     
-    if (data.includes(machineHex) && data.toString('ascii').includes('NUMBER')) {
+    // Detect voucher start - either "MACHINE NUMBER" or "Voucher #"
+    if ((data.includes(machineHex) && text.includes('NUMBER')) ||
+        (data.includes(voucherHex) && text.includes('#'))) {
       this.isCollectingVoucher = true;
       this.voucherBuffer = Buffer.alloc(0);
       this.voucherStartTime = Date.now();

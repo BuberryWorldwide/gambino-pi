@@ -1,8 +1,8 @@
 {
-  "machineId": "pi-1",
-  "storeId": "store_1755939573684",
+  "machineId": "pi-2-nimbus-1",
+  "storeId": "gallatin_nimbus_298",
   "apiEndpoint": "https://api.gambino.gold",
-  "machineToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJtYWNoaW5lSWQiOiJnYW1iaW5vLXBpLTAwMSIsInN0b3JlSWQiOiJzdG9yZV8xNzU1OTM5NTczNjg0IiwidHlwZSI6ImVkZ2VfZGV2aWNlIiwiaWF0IjoxNzU4MDQ5NDIzLCJleHAiOjE3ODk1ODU0MjN9.9jg2ZHRelDRSdoS155T5HNtPFBPbd15RGHwFPgr0D94",
+  "machineToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJtYWNoaW5lSWQiOiJwaS0yLW5pbWJ1cy0xIiwic3RvcmVJZCI6ImdhbGxhdGluX25pbWJ1c18yOTgiLCJ0eXBlIjoiZWRnZV9kZXZpY2UiLCJpYXQiOjE3NjAzNzk5ODcsImV4cCI6MTc5MTkxNTk4N30.5Eo8xn0x24UiRaLKnAel6aBxAa6CywVdHFgt9RgTgyI",
   "serialPort": "/dev/ttyUSB0",
   "printerPort": "/dev/ttyUSB1",
   "serialBaud": 9600,

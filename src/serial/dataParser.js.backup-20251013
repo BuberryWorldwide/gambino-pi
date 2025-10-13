@@ -3,7 +3,7 @@ const logger = require('../utils/logger');
 
 class DataParser {
   constructor() {
-    // Existing patterns for single-line events
+    // Legacy patterns for single-line events (keep for backwards compatibility)
     this.patterns = {
       voucher: /VOUCHER PRINT:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s+(\d+)/i,
       moneyIn: /MONEY IN:\s*\$(\d+\.\d{2})\s*-\s*MACHINE\s+(\d+)/i,
@@ -12,27 +12,143 @@ class DataParser {
       sessionEnd: /SESSION END\s*-\s*MACHINE\s+(\d+)/i
     };
     
-    // State machine for daily report parsing
-    this.currentDailyMachine = null;  // Stores machine number from <29> line
+    // Buffer-based voucher parsing
+    this.voucherBuffer = Buffer.alloc(0);
+    this.isCollectingVoucher = false;
+    this.voucherStartTime = null;
+    
+    // State for daily report parsing
+    this.currentDailyMachine = null;
     this.lastMachineNumber = null;
   }
 
+  /**
+   * Parse raw buffer data - looks for voucher patterns
+   */
+  parseBuffer(data) {
+    // Check if this chunk contains voucher start marker (MACHINE NUMBER in hex)
+    // Pattern: 4D 41 43 48 49 4E 45 = "MACHINE"
+    const machineHex = Buffer.from('MACHINE', 'ascii');
+    
+    if (data.includes(machineHex) && data.toString('ascii').includes('NUMBER')) {
+      this.isCollectingVoucher = true;
+      this.voucherBuffer = Buffer.alloc(0);
+      this.voucherStartTime = Date.now();
+      logger.debug('🎫 Voucher start detected, buffering...');
+    }
+    
+    // If we're collecting a voucher, add to buffer
+    if (this.isCollectingVoucher) {
+      this.voucherBuffer = Buffer.concat([this.voucherBuffer, data]);
+      
+      // Check for voucher end pattern: ESC P 00 (1B 50 00) or timeout
+      if (data.includes(Buffer.from([0x1B, 0x50, 0x00])) || 
+          (Date.now() - this.voucherStartTime > 2000)) {
+        
+        // Parse the complete voucher
+        const voucherEvent = this.parseCompleteVoucher(this.voucherBuffer);
+        
+        // Reset voucher collection
+        this.isCollectingVoucher = false;
+        this.voucherBuffer = Buffer.alloc(0);
+        this.voucherStartTime = null;
+        
+        return voucherEvent;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Parse a complete voucher buffer
+   */
+  parseCompleteVoucher(buffer) {
+    try {
+      const text = buffer.toString('ascii');
+      const cleaned = text.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').trim();
+      
+      logger.debug(`📄 Parsing voucher (${buffer.length} bytes)`);
+      
+      // Extract machine number - looks for digits after "MACHINE NUMBER"
+      const machineMatch = text.match(/MACHINE\s+NUMBER[\s\r\n]+(\d+)/i);
+      const machineNumber = machineMatch ? machineMatch[1] : null;
+      
+      // Extract voucher number
+      const voucherMatch = text.match(/Voucher\s*#\s*(\d+)/i);
+      const voucherNumber = voucherMatch ? voucherMatch[1] : null;
+      
+      // Extract amount - looks for $ followed by digits
+      const amountMatch = text.match(/\$(\d+\.\d{2})/);
+      const amount = amountMatch ? parseFloat(amountMatch[1]) : null;
+      
+      // Extract serial number
+      const serialMatch = text.match(/SERIAL\s*#\s*([\w\-]+)/i);
+      const serialNumber = serialMatch ? serialMatch[1] : null;
+      
+      // Extract confidence number
+      const confidenceMatch = text.match(/Confidence\s+Number\s*:\s*([\d\-]+)/i);
+      const confidenceNumber = confidenceMatch ? confidenceMatch[1] : null;
+      
+      // Validate we got the critical fields
+      if (!machineNumber || !amount) {
+        logger.warn('⚠️ Voucher missing critical fields', {
+          machineNumber,
+          amount,
+          voucherNumber
+        });
+        return null;
+      }
+      
+      const machineId = `machine_${machineNumber.padStart(2, '0')}`;
+      
+      logger.info(`🎫 Voucher #${voucherNumber}: $${amount} from machine ${machineNumber}`);
+      
+      return {
+        eventType: 'voucher',
+        amount: amount,
+        machineId: machineId,
+        gamingMachineId: machineId,
+        timestamp: new Date().toISOString(),
+        rawData: `Voucher #${voucherNumber} - $${amount} from Machine ${machineNumber}`,
+        metadata: {
+          voucherNumber: voucherNumber,
+          serialNumber: serialNumber,
+          confidenceNumber: confidenceNumber,
+          source: 'buffer_parser'
+        }
+      };
+      
+    } catch (error) {
+      logger.error('Error parsing voucher buffer:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Parse line-by-line (for daily reports and legacy events)
+   */
   parse(rawData) {
     try {
       const timestamp = new Date().toISOString();
       const trimmedData = rawData.trim();
       
-      // Skip empty lines and decorative separator lines
+      // Skip empty lines and decorative lines
       if (!trimmedData || 
           trimmedData.match(/^[\*_\-]+$/) || 
           trimmedData.match(/^Daily (Books|of|REMOTE|MATCH|Total)/i) ||
           trimmedData.match(/^(DATE|SERIAL|Last Cleared|Dailies|Unit Daily)/i) ||
-          trimmedData.match(/^This voucher/i) ||
-          trimmedData.match(/by this base unit/i)) {
+          trimmedData.match(/by this base unit/i) ||
+          trimmedData.match(/Redeemable at/i) ||
+          trimmedData.match(/plays collected/i) ||
+          trimmedData.match(/Confidence Number/i) ||
+          trimmedData.match(/MACHINE NUMBER/i) ||
+          trimmedData.match(/Voucher #/i) ||
+          trimmedData.match(/This voucher is good for/i)) {
         return null;
       }
       
-      logger.info(`🔍 [PARSE] line: "${trimmedData.substring(0, 60)}..." | last machine: ${this.lastMachineNumber || 'NULL'}`);
+      logger.debug(`🔍 [LINE] "${trimmedData.substring(0, 60)}..."`);
 
       // Try to parse daily summary line
       const dailyEvent = this.parseDailySummaryLine(trimmedData);
@@ -50,8 +166,6 @@ class DataParser {
             machineNumber = match[1];
             gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
             
-            logger.debug(`🎯 Matched ${eventType}: machine ${machineNumber} -> ${gamingMachineId}`);
-            
             return {
               eventType: eventType === 'sessionStart' ? 'session_start' : 'session_end',
               action: eventType === 'sessionStart' ? 'start' : 'end',
@@ -66,8 +180,6 @@ class DataParser {
             machineNumber = match[2];
             gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
             
-            logger.debug(`🎯 Matched ${eventType}: $${amount} from machine ${machineNumber} -> ${gamingMachineId}`);
-            
             return {
               eventType: eventType === 'moneyIn' ? 'money_in' : eventType,
               amount: parseFloat(amount),
@@ -80,99 +192,71 @@ class DataParser {
         }
       }
 
-      // If no patterns match, log for debugging
-      logger.warn(`⚠️ Unrecognized data format: "${trimmedData.substring(0, 60)}"`);
-      
       return null;
 
     } catch (error) {
-      logger.error('Error parsing data:', error);
-      logger.error('Raw data that caused error:', rawData);
+      logger.error('Error parsing line:', error);
       return null;
     }
   }
 
   parseDailySummaryLine(line) {
-    // Strip control characters that prevent pattern matching
     const cleanLine = line.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
     
-    // Pattern 1: Machine number line in angle brackets: "<29>"
     const machineMatch = cleanLine.match(/^<(\d+)>$/);
     if (machineMatch) {
       const machineNumber = machineMatch[1];
       logger.info(`📊 Captured machine number: ${machineNumber}`);
       this.currentDailyMachine = machineNumber;
       this.lastMachineNumber = machineNumber;
-      return null; // Wait for the Daily In line
+      return null;
     }
 
-    // Pattern 2: Combined format (in case readline doesn't split it)
-    // Format: "<29>\n Daily In             ==         0.00"
     const combinedMatch = line.match(/<(\d+)>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
     if (combinedMatch) {
       const machineNumber = combinedMatch[1];
       const amount = parseFloat(combinedMatch[2]);
       
-      logger.info(`📊 Daily summary (combined): Machine ${machineNumber}, ${amount} in`);
-      
       const event = this.buildDailySummaryEvent(machineNumber, amount, new Date().toISOString());
       this.lastMachineNumber = machineNumber;
       this.currentDailyMachine = null;
       
-      logger.info(`✅ Daily summary parsed: Machine ${event.machineId}, ${amount} in`);
+      logger.info(`✅ Daily summary: Machine ${event.machineId}, ${amount} in`);
       return event;
     }
 
-    // Pattern 3: Daily In line (should have machine number from previous line)
-    // Format: " Daily  In            ==         0.00"
     const dailyInMatch = line.match(/^Daily\s+In\s+==\s+(\d+\.\d{2})/i);
     if (dailyInMatch) {
       const amount = parseFloat(dailyInMatch[1]);
       
-      // Use the machine number we captured from the previous <29> line
       if (this.currentDailyMachine) {
-        logger.info(`💵 Daily In: ${amount} for machine ${this.currentDailyMachine}`);
-        
         const event = this.buildDailySummaryEvent(
           this.currentDailyMachine,
           amount,
           new Date().toISOString()
         );
-        
-        this.currentDailyMachine = null; // Reset for next machine
-        
-        logger.info(`✅ Daily summary parsed: Machine ${event.machineId}, ${amount} in`);
+        this.currentDailyMachine = null;
+        logger.info(`✅ Daily summary: Machine ${event.machineId}, ${amount} in`);
         return event;
       }
-      // Fallback: if no stored machine, try to infer from last machine
       else if (this.lastMachineNumber) {
         const nextMachine = (parseInt(this.lastMachineNumber) + 1).toString();
-        logger.info(`💵 Daily In: ${amount} for inferred machine ${nextMachine}`);
-        
         const event = this.buildDailySummaryEvent(nextMachine, amount, new Date().toISOString());
         this.lastMachineNumber = nextMachine;
-        
-        logger.info(`✅ Daily summary parsed (inferred): Machine ${event.machineId}, ${amount} in`);
+        logger.info(`✅ Daily summary (inferred): Machine ${event.machineId}, ${amount} in`);
         return event;
       }
-      // Last resort: start at machine 29
       else {
-        logger.info(`💵 Daily In: ${amount} for machine 29 (bootstrap)`);
-        
         const event = this.buildDailySummaryEvent('29', amount, new Date().toISOString());
         this.lastMachineNumber = '29';
-        
-        logger.info(`✅ Daily summary parsed: Machine ${event.machineId}, ${amount} in`);
+        logger.info(`✅ Daily summary: Machine ${event.machineId}, ${amount} in`);
         return event;
       }
     }
 
-    // Pattern 4: Standalone "Out" line (for unit totals at the end)
-    // Format: " Out                  ==         0"
     const outMatch = line.match(/^Out\s+==\s+\d+/i);
     if (outMatch) {
-      logger.info(`📊 Unit total Out line detected`);
-      return null; // We skip this - it's the final unit total
+      return null;
     }
 
     return null;
@@ -180,7 +264,7 @@ class DataParser {
 
   buildDailySummaryEvent(machineNumber, amount, timestamp) {
     const gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
-    const reportDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const reportDate = new Date().toISOString().split('T')[0];
     
     return {
       eventType: 'money_in',
@@ -202,41 +286,12 @@ class DataParser {
     return `session_${machineNumber}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  extractMachineId(rawData) {
-    const machineMatch = rawData.match(/MACHINE\s+(\d+)/i);
-    if (machineMatch) {
-      const machineNumber = machineMatch[1].padStart(2, '0');
-      return `machine_${machineNumber}`;
-    }
-    return null;
-  }
-
-  validateEvent(event) {
-    if (!event) return false;
-    
-    const requiredFields = ['eventType', 'timestamp', 'rawData', 'machineId'];
-    const hasRequired = requiredFields.every(field => event[field]);
-    
-    if (!hasRequired) {
-      logger.warn('Event missing required fields:', event);
-      return false;
-    }
-
-    // Validate amount for monetary events
-    if (['voucher', 'money_in', 'collect'].includes(event.eventType)) {
-      if (event.amount === undefined || isNaN(parseFloat(event.amount))) {
-        logger.warn('Monetary event missing valid amount:', event);
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  // Reset state (useful for testing or error recovery)
   resetState() {
     this.currentDailyMachine = null;
     this.lastMachineNumber = null;
+    this.isCollectingVoucher = false;
+    this.voucherBuffer = Buffer.alloc(0);
+    this.voucherStartTime = null;
     logger.info('Parser state reset');
   }
 }
