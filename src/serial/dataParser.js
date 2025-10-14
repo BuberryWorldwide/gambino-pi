@@ -194,7 +194,8 @@ class DataParser {
       return null;
     }
 
-    const combinedMatch = line.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);    if (combinedMatch) {
+    const combinedMatch = line.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
+    if (combinedMatch) {
       const machineNumber = combinedMatch[1];
       const amount = parseFloat(combinedMatch[2]);
       
