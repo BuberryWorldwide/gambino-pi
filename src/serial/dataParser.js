@@ -30,10 +30,12 @@ class DataParser {
     // Detect voucher start - either "MACHINE NUMBER" or "Voucher #"
     if ((data.includes(machineHex) && text.includes('NUMBER')) ||
         (data.includes(voucherHex) && text.includes('#'))) {
-      this.isCollectingVoucher = true;
-      this.voucherBuffer = Buffer.alloc(0);
-      this.voucherStartTime = Date.now();
-      logger.debug('🎫 Voucher start detected, buffering...');
+      if (!this.isCollectingVoucher) {              // ← ADD THIS LINE
+        this.isCollectingVoucher = true;
+        this.voucherBuffer = Buffer.alloc(0);
+        this.voucherStartTime = Date.now();
+        logger.debug('🎫 Voucher start detected, buffering...');
+      }                                              // ← ADD THIS LINE
     }
     
     if (this.isCollectingVoucher) {
@@ -183,7 +185,7 @@ class DataParser {
   parseDailySummaryLine(line) {
     const cleanLine = line.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
     
-    const machineMatch = cleanLine.match(/^<(\d+)>$/);
+    const machineMatch = cleanLine.match(/^<\s*(\d+)\s*>$/);
     if (machineMatch) {
       const machineNumber = machineMatch[1];
       logger.info(`📊 Captured machine number: ${machineNumber}`);
@@ -192,8 +194,7 @@ class DataParser {
       return null;
     }
 
-    const combinedMatch = line.match(/<(\d+)>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
-    if (combinedMatch) {
+    const combinedMatch = line.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);    if (combinedMatch) {
       const machineNumber = combinedMatch[1];
       const amount = parseFloat(combinedMatch[2]);
       

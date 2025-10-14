@@ -3,7 +3,6 @@ const { ReadlineParser } = require('@serialport/parser-readline');
 const EventEmitter = require('events');
 const DataParser = require('./dataParser');
 const logger = require('../utils/logger');
-const SerialLogger = require('../utils/serialLogger');
 
 class SerialMonitor extends EventEmitter {
   constructor(config) {
@@ -13,7 +12,6 @@ class SerialMonitor extends EventEmitter {
     this.printerPort = null;
     this.parser = null;
     this.dataParser = new DataParser();
-    this.serialLogger = new SerialLogger(); // ← ADD THIS
     this.isConnected = false;
     this.printerConnected = false;
     this.isDevelopmentMode = process.env.NODE_ENV === 'development';
@@ -152,9 +150,6 @@ class SerialMonitor extends EventEmitter {
     
     // RAW DATA HANDLER - for voucher detection and printer passthrough
     this.serialPort.on('data', (rawData) => {
-      // Log raw data
-      this.serialLogger.logRaw(rawData, 'ttyUSB0'); // ← ADD THIS
-      
       // 1. Forward to printer FIRST (before any processing)
       if (this.printerPort && this.printerConnected) {
         this.printerPort.write(rawData, (err) => {
@@ -168,7 +163,6 @@ class SerialMonitor extends EventEmitter {
       const voucherEvent = this.dataParser.parseBuffer(rawData);
       if (voucherEvent) {
         logger.info(`🎯 Parsed voucher: ${voucherEvent.eventType} from ${voucherEvent.machineId}`);
-        this.serialLogger.logEvent(voucherEvent, 'voucher'); // ← ADD THIS
         this.emit('muthaEvent', voucherEvent);
       }
     });
@@ -179,7 +173,6 @@ class SerialMonitor extends EventEmitter {
     this.parser.on('data', (data) => {
       const trimmedData = data.toString().trim();
       if (trimmedData) {
-        this.serialLogger.logLine(trimmedData, 'readline'); // ← ADD THIS
         logger.debug(`📥 Line: ${trimmedData.substring(0, 60)}...`);
         this.processLineData(trimmedData);
       }
@@ -193,7 +186,6 @@ class SerialMonitor extends EventEmitter {
       
       if (parsedEvent) {
         logger.info(`🎯 Parsed event: ${parsedEvent.eventType} from ${parsedEvent.machineId}`);
-        this.serialLogger.logEvent(parsedEvent, 'daily'); // ← ADD THIS
         
         if (parsedEvent.eventType.includes('session')) {
           this.emit('sessionEvent', parsedEvent);
