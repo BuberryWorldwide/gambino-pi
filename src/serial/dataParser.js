@@ -20,6 +20,10 @@ class DataParser {
     // State for daily report parsing
     this.currentDailyMachine = null;
     this.lastMachineNumber = null;
+    
+    // State for voucher machine number tracking
+    this.waitingForVoucherMachineNumber = false;
+    this.currentVoucherMachine = null;
   }
 
   parseBuffer(data) {
@@ -30,12 +34,12 @@ class DataParser {
     // Detect voucher start - either "MACHINE NUMBER" or "Voucher #"
     if ((data.includes(machineHex) && text.includes('NUMBER')) ||
         (data.includes(voucherHex) && text.includes('#'))) {
-      if (!this.isCollectingVoucher) {              // ← ADD THIS LINE
+      if (!this.isCollectingVoucher) {
         this.isCollectingVoucher = true;
         this.voucherBuffer = Buffer.alloc(0);
         this.voucherStartTime = Date.now();
         logger.debug('🎫 Voucher start detected, buffering...');
-      }                                              // ← ADD THIS LINE
+      }
     }
     
     if (this.isCollectingVoucher) {
@@ -64,8 +68,14 @@ class DataParser {
       
       logger.debug(`📄 Parsing voucher (${buffer.length} bytes)`);
       
-      const machineMatch = text.match(/MACHINE\s+NUMBER[\s\r\n]+(\d+)/i);
-      const machineNumber = machineMatch ? machineMatch[1] : null;
+      // Use the machine number we captured from the line parser
+      let machineNumber = this.currentVoucherMachine;
+      
+      // Fallback: try to extract from buffer if we missed it
+      if (!machineNumber) {
+        const machineMatch = text.match(/MACHINE\s+NUMBER[\s\r\n]+(\d+)/i);
+        machineNumber = machineMatch ? machineMatch[1] : null;
+      }
       
       const voucherMatch = text.match(/Voucher\s*#\s*(\d+)/i);
       const voucherNumber = voucherMatch ? voucherMatch[1] : null;
@@ -92,8 +102,11 @@ class DataParser {
       
       logger.info(`🎫 Voucher #${voucherNumber}: $${amount} from machine ${machineNumber}`);
       
+      // Clear the machine number after use
+      this.currentVoucherMachine = null;
+      
       return {
-        eventType: 'voucher',
+        eventType: 'voucher_print',
         amount: amount,
         machineId: machineId,
         gamingMachineId: machineId,
@@ -118,29 +131,53 @@ class DataParser {
       const timestamp = new Date().toISOString();
       const trimmedData = rawData.trim();
       
-      if (!trimmedData || 
-          trimmedData.match(/^[\*_\-]+$/) || 
-          trimmedData.match(/^Daily (Books|of|REMOTE|MATCH|Total)/i) ||
-          trimmedData.match(/^(DATE|SERIAL|Last Cleared|Dailies|Unit Daily)/i) ||
-          trimmedData.match(/by this base unit/i) ||
-          trimmedData.match(/Redeemable at/i) ||
-          trimmedData.match(/plays collected/i) ||
-          trimmedData.match(/Confidence Number/i) ||
-          trimmedData.match(/MACHINE NUMBER/i) ||
-          trimmedData.match(/Voucher #/i) ||
-          trimmedData.match(/This voucher is good for/i)) {
+      // CRITICAL: Strip ALL control characters first for pattern matching
+      const cleanData = trimmedData.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
+      
+      // Skip empty lines and decorative lines
+      if (!cleanData || 
+          cleanData.match(/^[\*_\-]+$/) || 
+          cleanData.match(/^Daily (Books|of|REMOTE|MATCH|Total)/i) ||
+          cleanData.match(/^(DATE|SERIAL|Last Cleared|Dailies|Unit Daily)/i) ||
+          cleanData.match(/by this base unit/i) ||
+          cleanData.match(/Redeemable at/i) ||
+          cleanData.match(/plays collected/i) ||
+          cleanData.match(/Confidence Number/i) ||
+          cleanData.match(/Voucher #/i) ||
+          cleanData.match(/This voucher is good for/i)) {
         return null;
       }
       
-      logger.debug(`🔍 [LINE] "${trimmedData.substring(0, 60)}..."`);
+      logger.debug(`🔍 [LINE] "${cleanData.substring(0, 60)}..."`);
 
+      // VOUCHER MACHINE NUMBER DETECTION
+      // Check for MACHINE NUMBER header (appears before each voucher)
+      if (cleanData.match(/MACHINE\s+NUMBER/i)) {
+        this.waitingForVoucherMachineNumber = true;
+        logger.debug('🎰 Detected voucher MACHINE NUMBER header');
+        return null;
+      }
+      
+      // Capture the machine number (next line after MACHINE NUMBER header)
+      if (this.waitingForVoucherMachineNumber) {
+        const machineMatch = cleanData.match(/^\s*(\d+)\s*$/);
+        if (machineMatch) {
+          this.currentVoucherMachine = machineMatch[1];
+          this.waitingForVoucherMachineNumber = false;
+          logger.info(`🎰 Captured voucher machine number: ${this.currentVoucherMachine}`);
+          return null;
+        }
+      }
+
+      // Try to parse daily summary line
       const dailyEvent = this.parseDailySummaryLine(trimmedData);
       if (dailyEvent) {
         return dailyEvent;
       }
 
+      // Check single-line patterns
       for (const [eventType, pattern] of Object.entries(this.patterns)) {
-        const match = trimmedData.match(pattern);
+        const match = cleanData.match(pattern);
         if (match) {
           let machineNumber, amount, gamingMachineId;
           
@@ -185,6 +222,7 @@ class DataParser {
   parseDailySummaryLine(line) {
     const cleanLine = line.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
     
+    // Check for machine number line: < 1>
     const machineMatch = cleanLine.match(/^<\s*(\d+)\s*>$/);
     if (machineMatch) {
       const machineNumber = machineMatch[1];
@@ -194,27 +232,24 @@ class DataParser {
       return null;
     }
 
-    const combinedMatch = line.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
+    // Check for combined format: < 1>\n Daily In == 897.00
+    const combinedMatch = cleanLine.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
     if (combinedMatch) {
       const machineNumber = combinedMatch[1];
       const amount = parseFloat(combinedMatch[2]);
       
       const event = this.buildDailySummaryEvent(machineNumber, amount, 'money_in', new Date().toISOString());
       this.lastMachineNumber = machineNumber;
-      this.currentDailyMachine = null;
       
       logger.info(`✅ Daily summary: Machine ${event.machineId}, ${amount} in`);
       return event;
     }
 
-    // NEW: Daily Out line - must come BEFORE Daily In check
-    const dailyOutMatch = line.match(/^Daily\s+Out\s+==\s+(\d+\.\d{2})/i);
-    if (dailyOutMatch) {
-      const amount = parseFloat(dailyOutMatch[1]);
-      
+    // Handle "Daily Total Paid" (money out for individual machines)
+    const paidMatch = line.match(/Daily\s+Total\s+Paid\s+==\s+(\d+\.\d{2})/i);
+    if (paidMatch) {
       if (this.currentDailyMachine) {
-        logger.info(`💸 Daily Out: ${amount} for machine ${this.currentDailyMachine}`);
-        
+        const amount = parseFloat(paidMatch[1]);
         const event = this.buildDailySummaryEvent(
           this.currentDailyMachine,
           amount,
@@ -222,57 +257,54 @@ class DataParser {
           new Date().toISOString()
         );
         
-        // Don't reset currentDailyMachine - we still need it for "Daily In"
-        
-        logger.info(`✅ Daily Out summary: Machine ${event.machineId}, ${amount} out`);
+        logger.info(`✅ Daily Total Paid: Machine ${event.machineId}, $${amount} out`);
+        this.currentDailyMachine = null;
         return event;
-      }
-      else if (this.lastMachineNumber) {
-        const nextMachine = (parseInt(this.lastMachineNumber) + 1).toString();
-        logger.info(`💸 Daily Out: ${amount} for inferred machine ${nextMachine}`);
-        
-        const event = this.buildDailySummaryEvent(nextMachine, amount, 'money_out', new Date().toISOString());
-        
-        logger.info(`✅ Daily Out summary (inferred): Machine ${event.machineId}, ${amount} out`);
-        return event;
+      } else {
+        logger.debug(`⏭️  Skipping grand total: Daily Total Paid ${paidMatch[1]}`);
+        return null;
       }
     }
 
-    const dailyInMatch = line.match(/^Daily\s+In\s+==\s+(\d+\.\d{2})/i);
+    // Process "Daily In" if we have a current machine from previous line
+    const dailyInMatch = line.match(/Daily\s+In\s+==\s+(\d+\.\d{2})/i);
     if (dailyInMatch) {
-      const amount = parseFloat(dailyInMatch[1]);
-      
       if (this.currentDailyMachine) {
+        const amount = parseFloat(dailyInMatch[1]);
         const event = this.buildDailySummaryEvent(
           this.currentDailyMachine,
           amount,
           'money_in',
           new Date().toISOString()
         );
-        this.currentDailyMachine = null;
+        
         logger.info(`✅ Daily In summary: Machine ${event.machineId}, ${amount} in`);
         return event;
-      }
-      else if (this.lastMachineNumber) {
-        const nextMachine = (parseInt(this.lastMachineNumber) + 1).toString();
-        const event = this.buildDailySummaryEvent(nextMachine, amount, 'money_in', new Date().toISOString());
-        this.lastMachineNumber = nextMachine;
-        logger.info(`✅ Daily In summary (inferred): Machine ${event.machineId}, ${amount} in`);
-        return event;
-      }
-      else {
-        const event = this.buildDailySummaryEvent('29', amount, 'money_in', new Date().toISOString());
-        this.lastMachineNumber = '29';
-        logger.info(`✅ Daily In summary: Machine ${event.machineId}, ${amount} in`);
-        return event;
+      } else {
+        logger.debug(`⏭️  Skipping grand total: Daily In ${dailyInMatch[1]}`);
+        return null;
       }
     }
 
-    // Unit total Out line (skip this - it's the grand total)
-    const outMatch = line.match(/^Out\s+==\s+\d+/i);
-    if (outMatch) {
-      logger.info(`📊 Unit total Out line detected (skipping grand total)`);
-      return null;
+    // Process "Daily Out"
+    const dailyOutMatch = line.match(/Daily\s+Out\s+==\s+(\d+\.\d{2})/i);
+    if (dailyOutMatch) {
+      if (this.currentDailyMachine) {
+        const amount = parseFloat(dailyOutMatch[1]);
+        const event = this.buildDailySummaryEvent(
+          this.currentDailyMachine,
+          amount,
+          'money_out',
+          new Date().toISOString()
+        );
+        
+        logger.info(`✅ Daily Out summary: Machine ${event.machineId}, ${amount} out`);
+        this.currentDailyMachine = null;
+        return event;
+      } else {
+        logger.debug(`⏭️  Skipping grand total: Daily Out ${dailyOutMatch[1]}`);
+        return null;
+      }
     }
 
     return null;
@@ -308,6 +340,8 @@ class DataParser {
     this.isCollectingVoucher = false;
     this.voucherBuffer = Buffer.alloc(0);
     this.voucherStartTime = null;
+    this.waitingForVoucherMachineNumber = false;
+    this.currentVoucherMachine = null;
     logger.info('Parser state reset');
   }
 }
