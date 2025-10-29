@@ -134,11 +134,19 @@ class DataParser {
       // CRITICAL: Strip ALL control characters first for pattern matching
       const cleanData = trimmedData.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
       
+      // CRITICAL: Reset machine context when Unit Daily appears (grand totals, not per-machine)
+      if (cleanData.match(/Unit Daily/i)) {
+        logger.debug('🚫 Unit Daily detected - resetting machine context');
+        this.currentDailyMachine = null;
+        this.lastMachineNumber = null;
+        return null;
+      }
+      
       // Skip empty lines and decorative lines
       if (!cleanData || 
           cleanData.match(/^[\*_\-]+$/) || 
-          cleanData.match(/^Daily (Books|of|REMOTE|MATCH|Total)/i) ||
-          cleanData.match(/^(DATE|SERIAL|Last Cleared|Dailies|Unit Daily)/i) ||
+          cleanData.match(/^Daily (Books printed|Books cleared|of Vouchers|REMOTE|MATCH)\b/i) ||
+          cleanData.match(/^(DATE|SERIAL|Last Cleared|Dailies)/i) ||
           cleanData.match(/by this base unit/i) ||
           cleanData.match(/Redeemable at/i) ||
           cleanData.match(/plays collected/i) ||
@@ -235,18 +243,20 @@ class DataParser {
     // Check for combined format: < 1>\n Daily In == 897.00
     const combinedMatch = cleanLine.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
     if (combinedMatch) {
-      const machineNumber = combinedMatch[1];
-      const amount = parseFloat(combinedMatch[2]);
-      
-      const event = this.buildDailySummaryEvent(machineNumber, amount, 'money_in', new Date().toISOString());
-      this.lastMachineNumber = machineNumber;
-      
-      logger.info(`✅ Daily summary: Machine ${event.machineId}, ${amount} in`);
-      return event;
-    }
+  const machineNumber = combinedMatch[1];
+  const amount = parseFloat(combinedMatch[2]);
+  
+  const event = this.buildDailySummaryEvent(machineNumber, amount, 'money_in', new Date().toISOString());
+  this.currentDailyMachine = machineNumber;  // ADD THIS LINE
+  this.lastMachineNumber = machineNumber;
+  
+  logger.info(`✅ Daily summary: Machine ${event.machineId}, ${amount} in`);
+  return event;
+}
 
     // Handle "Daily Total Paid" (money out for individual machines)
-    const paidMatch = line.match(/Daily\s+Total\s+Paid\s+==\s+(\d+\.\d{2})/i);
+    const paidMatch = cleanLine.match(/Daily\s+Total\s+Paid\s+==\s+(\d+\.\d{2})/i);
+
     if (paidMatch) {
       if (this.currentDailyMachine) {
         const amount = parseFloat(paidMatch[1]);
@@ -267,7 +277,8 @@ class DataParser {
     }
 
     // Process "Daily In" if we have a current machine from previous line
-    const dailyInMatch = line.match(/Daily\s+In\s+==\s+(\d+\.\d{2})/i);
+    const dailyInMatch = cleanLine.match(/Daily\s+In\s+==\s+(\d+\.\d{2})/i);
+
     if (dailyInMatch) {
       if (this.currentDailyMachine) {
         const amount = parseFloat(dailyInMatch[1]);
@@ -287,7 +298,8 @@ class DataParser {
     }
 
     // Process "Daily Out"
-    const dailyOutMatch = line.match(/Daily\s+Out\s+==\s+(\d+\.\d{2})/i);
+    const dailyOutMatch = cleanLine.match(/Daily\s+Total\s+Paid\s+==\s+(\d+\.\d{2})/i);
+
     if (dailyOutMatch) {
       if (this.currentDailyMachine) {
         const amount = parseFloat(dailyOutMatch[1]);
@@ -298,7 +310,7 @@ class DataParser {
           new Date().toISOString()
         );
         
-        logger.info(`✅ Daily Out summary: Machine ${event.machineId}, ${amount} out`);
+        logger.info(`✅ Daily Total Paid: Machine ${event.machineId}, ${amount} out`);
         this.currentDailyMachine = null;
         return event;
       } else {
@@ -311,7 +323,7 @@ class DataParser {
   }
 
   buildDailySummaryEvent(machineNumber, amount, eventType, timestamp) {
-    const gamingMachineId = `machine_${machineNumber.padStart(2, '0')}`;
+    const gamingMachineId = `machine_${String(machineNumber).padStart(2, '0')}`;
     const reportDate = new Date().toISOString().split('T')[0];
     
     return {
@@ -321,11 +333,12 @@ class DataParser {
       machineId: gamingMachineId,
       gamingMachineId: gamingMachineId,
       timestamp: timestamp,
-      idempotencyKey: `daily_${eventType}_${gamingMachineId}_${reportDate}`,
+      idempotencyKey: `daily_${eventType}_${gamingMachineId}_${reportDate}_${timestamp}`,
       rawData: `Daily Summary ${eventType === 'money_in' ? 'In' : 'Out'} - Machine ${machineNumber} - $${amount}`,
       metadata: {
         source: 'daily_report',
-        reportDate: reportDate
+        reportDate: reportDate,
+        isDailyReport: true
       }
     };
   }

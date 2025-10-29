@@ -20,41 +20,44 @@ class GambinoPi {
     this.setupGracefulShutdown();
   }
 
-  async start() {
+async start() {
+  try {
+    logger.info('Starting Gambino Pi Edge Device...');
+    
+    await this.config.load();
+    logger.info(`Machine ID: ${this.config.get('machineId')}`);
+    
+    // Start sync manager first
+    this.syncManager.start();
+    logger.info('Sync manager started');
+    
+    // Test API connection (but don't fail if offline)
     try {
-      logger.info('Starting Gambino Pi Edge Device...');
-      
-      await this.config.load();
-      logger.info(`Machine ID: ${this.config.get('machineId')}`);
-      
-      // Start sync manager first
-      this.syncManager.start();
-      logger.info('Sync manager started');
-      
-      // Test API connection (but don't fail if offline)
-      try {
-        await this.apiClient.testConnection();
-        logger.info('API connection verified');
-      } catch (error) {
-        logger.warn('API offline - will work in offline mode');
-      }
-      
-      await this.serialMonitor.start();
-      logger.info('Serial monitoring started');
-      
-      this.healthMonitor.start();
-      logger.info('Health monitoring started');
-      
-      this.setupEventHandlers();
-      
-      this.isRunning = true;
-      logger.info('Gambino Pi is ready and monitoring...');
-      
+      await this.apiClient.testConnection();
+      logger.info('API connection verified');
     } catch (error) {
-      logger.error('Failed to start Gambino Pi:', error);
-      process.exit(1);
+      logger.warn('API offline - will work in offline mode');
     }
+    
+    await this.serialMonitor.start();
+    logger.info('Serial monitoring started');
+
+    // Force update health status after serial starts
+    this.healthMonitor.updateSerialStatus(this.serialMonitor.isConnected); 
+    
+    this.healthMonitor.start();  // ← Keep this one
+    logger.info('Health monitoring started');
+    
+    this.setupEventHandlers();
+    
+    this.isRunning = true;
+    logger.info('Gambino Pi is ready and monitoring...');
+    
+  } catch (error) {
+    logger.error('Failed to start Gambino Pi:', error);
+    process.exit(1);
   }
+}
 
   setupEventHandlers() {
     // Handle parsed events from Mutha Goose
@@ -75,6 +78,9 @@ class GambinoPi {
         logger.error('Failed to store event locally:', error);
       }
     });
+  
+
+    
 
     // Handle session events
     this.serialMonitor.on('sessionEvent', async (session) => {

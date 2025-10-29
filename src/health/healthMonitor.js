@@ -44,15 +44,18 @@ class HealthMonitor extends EventEmitter {
   }
 
   getHealthData() {
-    return {
+    const data = {
       timestamp: new Date().toISOString(),
       serialConnected: this.serialConnected,
       lastDataReceived: this.lastDataReceived,
       queueSize: this.apiClient?.eventQueue?.size() || 0
     };
+    logger.debug(`📊 Health data: serialConnected=${this.serialConnected}`);
+    return data;
   }
 
   updateSerialStatus(connected) {
+    logger.info(`🔌 Serial status update: ${connected ? 'CONNECTED' : 'DISCONNECTED'}`);
     this.serialConnected = connected;
     if (connected) {
       this.lastDataReceived = new Date().toISOString();
