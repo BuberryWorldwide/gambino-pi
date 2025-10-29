@@ -14,7 +14,7 @@ class ApiClient {
       baseURL: this.baseURL,
       timeout: 10000,
       headers: {
-        'Authorization': `Bearer ${this.machineToken}`,
+        'Authorization': this.getAuthHeader(),
         'Content-Type': 'application/json'
       }
     });
@@ -24,6 +24,18 @@ class ApiClient {
       (response) => response,
       (error) => this.handleApiError(error)
     );
+  }
+
+  
+  setTokenManager(tokenManager) {
+    this.tokenManager = tokenManager;
+  }
+
+  getAuthHeader() {
+    if (this.tokenManager) {
+      return `Bearer ${this.tokenManager.getAccessToken()}`;
+    }
+    return `Bearer ${this.machineToken}`;
   }
 
   async testConnection() {

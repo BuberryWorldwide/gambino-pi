@@ -6,6 +6,7 @@ const ConfigManager = require('./config/configManager');
 const LocalDatabase = require('./database/localDb');
 const SyncManager = require('./sync/syncManager');
 const logger = require('./utils/logger');
+const TokenManager = require('./utils/tokenManager');
 
 class GambinoPi {
   constructor() {
@@ -15,6 +16,7 @@ class GambinoPi {
     this.syncManager = new SyncManager(this.localDb, this.apiClient);
     this.serialMonitor = new SerialMonitor(this.config);
     this.healthMonitor = new HealthMonitor(this.config, this.apiClient);
+    this.tokenManager = null; // Will be initialized in start()
     
     this.isRunning = false;
     this.setupGracefulShutdown();
@@ -26,6 +28,12 @@ async start() {
     
     await this.config.load();
     logger.info(`Machine ID: ${this.config.get('machineId')}`);
+    
+    // Initialize token manager for auto-refresh
+    this.tokenManager = new TokenManager(this.config.get('apiEndpoint'));
+    await this.tokenManager.init();
+    this.apiClient.setTokenManager(this.tokenManager);
+    logger.info('🔑 Token auto-refresh enabled');
     
     // Start sync manager first
     this.syncManager.start();
