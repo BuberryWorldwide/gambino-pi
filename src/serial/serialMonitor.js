@@ -13,7 +13,7 @@ class SerialMonitor extends EventEmitter {
     this.printerPort = null;
     this.parser = null;
     this.dataParser = new DataParser();
-    this.serialLogger = new SerialLogger(); // ← ADD THIS
+    this.serialLogger = new SerialLogger();
     this.isConnected = false;
     this.printerConnected = false;
     this.isDevelopmentMode = process.env.NODE_ENV === 'development';
@@ -78,6 +78,15 @@ class SerialMonitor extends EventEmitter {
           logger.error(`Failed to open serial port ${portPath}:`, err);
           reject(err);
         } else {
+          // Set DTR/RTS high for V1.11 Goose compatibility (universal fix)
+          this.serialPort.set({ dtr: true, rts: true }, (setErr) => {
+            if (setErr) {
+              logger.warn('Failed to set DTR/RTS:', setErr);
+            } else {
+              logger.info('✅ DTR/RTS signals set');
+            }
+          });
+
           this.isConnected = true;
           logger.info(`✅ Serial port ${portPath} opened successfully`);
           this.emit('connected');
@@ -139,11 +148,24 @@ class SerialMonitor extends EventEmitter {
       });
 
       this.printerPort.on('close', () => {
-        logger.warn('Printer port closed');
-        this.printerConnected = false;
+          logger.warn('Printer port closed');
+          this.printerConnected = false;
+        });
+        
+        // CRITICAL: Forward printer responses back to Mutha Goose
+        this.printerPort.on('data', (printerData) => {
+          if (this.serialPort && this.isConnected) {
+            this.serialPort.write(printerData, (err) => {
+              if (err) {
+                logger.error('Error forwarding printer response to Goose:', err);
+              } else {
+                logger.debug('✅ Forwarded printer ACK to Goose');
+              }
+            });
+          }
+        });
       });
-    });
-  }
+    }
 
   setupDataHandling() {
     // DUAL PARSING APPROACH:
@@ -152,8 +174,19 @@ class SerialMonitor extends EventEmitter {
     
     // RAW DATA HANDLER - for voucher detection and printer passthrough
     this.serialPort.on('data', (rawData) => {
+      // Send ACK back to Goose for V1.11 compatibility (universal - won't hurt newer versions)
+      try {
+        this.serialPort.write(Buffer.from([0x06]), (writeErr) => {
+          if (writeErr) {
+            logger.debug('ACK write error (non-critical):', writeErr);
+          }
+        });
+      } catch (ackErr) {
+        logger.debug('ACK error (non-critical):', ackErr);
+      }
+
       // Log raw data
-      this.serialLogger.logRaw(rawData, 'ttyUSB0'); // ← ADD THIS
+      this.serialLogger.logRaw(rawData, 'ttyUSB0');
       
       // 1. Forward to printer FIRST (before any processing)
       if (this.printerPort && this.printerConnected) {
@@ -168,7 +201,7 @@ class SerialMonitor extends EventEmitter {
       const voucherEvent = this.dataParser.parseBuffer(rawData);
       if (voucherEvent) {
         logger.info(`🎯 Parsed voucher: ${voucherEvent.eventType} from ${voucherEvent.machineId}`);
-        this.serialLogger.logEvent(voucherEvent, 'voucher'); // ← ADD THIS
+        this.serialLogger.logEvent(voucherEvent, 'voucher');
         this.emit('muthaEvent', voucherEvent);
       }
     });
@@ -179,7 +212,7 @@ class SerialMonitor extends EventEmitter {
     this.parser.on('data', (data) => {
       const trimmedData = data.toString().trim();
       if (trimmedData) {
-        this.serialLogger.logLine(trimmedData, 'readline'); // ← ADD THIS
+        this.serialLogger.logLine(trimmedData, 'readline');
         logger.debug(`📥 Line: ${trimmedData.substring(0, 60)}...`);
         this.processLineData(trimmedData);
       }
@@ -193,7 +226,7 @@ class SerialMonitor extends EventEmitter {
       
       if (parsedEvent) {
         logger.info(`🎯 Parsed event: ${parsedEvent.eventType} from ${parsedEvent.machineId}`);
-        this.serialLogger.logEvent(parsedEvent, 'daily'); // ← ADD THIS
+        this.serialLogger.logEvent(parsedEvent, 'daily');
         
         if (parsedEvent.eventType.includes('session')) {
           this.emit('sessionEvent', parsedEvent);

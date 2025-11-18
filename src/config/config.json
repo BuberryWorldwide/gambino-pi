@@ -2,12 +2,12 @@
   "machineId": "pi-2-nimbus-1",
   "storeId": "gallatin_nimbus_298",
   "apiEndpoint": "https://api.gambino.gold",
-  "machineToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJtYWNoaW5lSWQiOiJwaS0yLW5pbWJ1cy0xIiwic3RvcmVJZCI6ImdhbGxhdGluX25pbWJ1c18yOTgiLCJ0eXBlIjoiZWRnZV9kZXZpY2UiLCJpYXQiOjE3NjAzNzk5ODcsImV4cCI6MTc5MTkxNTk4N30.5Eo8xn0x24UiRaLKnAel6aBxAa6CywVdHFgt9RgTgyI",
+  "machineToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJodWJJZCI6InBpLTItbmltYnVzLTEiLCJzdG9yZUlkIjoiZ2FsbGF0aW5fbmltYnVzXzI5OCIsInR5cGUiOiJodWIiLCJpYXQiOjE3NjI0NjA2OTcsImV4cCI6MTc5Mzk5NjY5N30.9lE0TyUv72z4Jy0eNcQJVQTj-z9w0AnXF-JFVGzs8kg",
   "serialPort": "/dev/ttyUSB0",
   "printerPort": "/dev/ttyUSB1",
   "serialBaud": 9600,
   "heartbeatInterval": 30000,
   "retryAttempts": 3,
   "retryDelay": 1000,
-  "logLevel": "info"
+  "logLevel": "debug"
 }

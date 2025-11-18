@@ -1,12 +1,12 @@
 // src/utils/tokenManager.js
 const axios = require('axios');
 const fs = require('fs').promises;
-const path = require('path');
 
 class TokenManager {
   constructor(apiBaseUrl, envPath = '.env') {
     this.apiBaseUrl = apiBaseUrl;
     this.envPath = envPath;
+    this.hubId = null;
     this.accessToken = null;
     this.refreshToken = null;
     this.expiresAt = null;
@@ -14,26 +14,26 @@ class TokenManager {
   }
 
   async init() {
-    // Load tokens from .env
     await this.loadTokens();
     
-    // Start auto-refresh checker (every hour)
-    this.startAutoRefresh();
+    // Immediate refresh attempt on init
+    console.log('🔄 Running immediate token refresh...');
+    await this.refreshAccessToken();
     
+    this.startAutoRefresh();
     console.log('🔑 Token manager initialized');
   }
 
   async loadTokens() {
     try {
       const envContent = await fs.readFile(this.envPath, 'utf8');
-      
+      const hubIdMatch = envContent.match(/MACHINE_ID=(.+)/);
+      this.hubId = hubIdMatch ? hubIdMatch[1].trim() : null;
       const accessTokenMatch = envContent.match(/MACHINE_TOKEN=(.+)/);
-      const refreshTokenMatch = envContent.match(/REFRESH_TOKEN=(.+)/);
-      
       this.accessToken = accessTokenMatch ? accessTokenMatch[1].trim() : null;
+      const refreshTokenMatch = envContent.match(/REFRESH_TOKEN=(.+)/);
       this.refreshToken = refreshTokenMatch ? refreshTokenMatch[1].trim() : null;
-      
-      console.log('✅ Loaded tokens from .env');
+      console.log(`✅ Loaded tokens (hubId: ${this.hubId})`);
     } catch (error) {
       console.error('❌ Failed to load tokens:', error.message);
     }
@@ -43,67 +43,37 @@ class TokenManager {
     return this.accessToken;
   }
 
-  async checkAndRefresh() {
+  async refreshAccessToken() {
     try {
-      if (!this.refreshToken) {
-        console.warn('⚠️  No refresh token available');
+      if (!this.hubId || !this.refreshToken) {
+        console.error('❌ Missing hubId or refreshToken');
         return false;
       }
 
-      // Check token status
-      const statusResponse = await axios.get(`${this.apiBaseUrl}/api/token/status`, {
-        headers: { 'Authorization': `Bearer ${this.accessToken}` }
-      });
-
-      const { needsRefresh, expiresIn } = statusResponse.data;
-      
-      console.log(`🔍 Token status: expires in ${Math.floor(expiresIn / 3600)}h`);
-
-      if (needsRefresh) {
-        console.log('🔄 Token needs refresh, refreshing now...');
-        return await this.refreshAccessToken();
-      }
-
-      return true;
-    } catch (error) {
-      console.error('❌ Token status check failed:', error.message);
-      
-      // If 401, try to refresh
-      if (error.response?.status === 401) {
-        return await this.refreshAccessToken();
-      }
-      
-      return false;
-    }
-  }
-
-  async refreshAccessToken() {
-    try {
       console.log('🔄 Refreshing access token...');
-
-      const response = await axios.post(`${this.apiBaseUrl}/api/token/refresh`, {
+      console.log(`   Hub ID: ${this.hubId}`);
+      console.log(`   Endpoint: ${this.apiBaseUrl}/api/edge/refresh-token`);
+      
+      const response = await axios.post(`${this.apiBaseUrl}/api/edge/refresh-token`, {
+        hubId: this.hubId,
         refreshToken: this.refreshToken
       });
-
-      const { accessToken, expiresAt } = response.data;
-
-      // Update in-memory token
+      
+      console.log('📥 Refresh response received');
+      
+      const { accessToken, accessTokenExpiresAt } = response.data;
       this.accessToken = accessToken;
-      this.expiresAt = new Date(expiresAt);
-
-      // Update .env file
+      this.expiresAt = new Date(accessTokenExpiresAt);
+      
       await this.updateEnvFile(accessToken);
-
-      console.log(`✅ Token refreshed successfully! Expires: ${this.expiresAt}`);
+      
+      console.log(`✅ Token refreshed! Expires: ${this.expiresAt}`);
       return true;
-
     } catch (error) {
-      console.error('❌ Token refresh failed:', error.response?.data || error.message);
-      
-      if (error.response?.data?.code === 'REFRESH_TOKEN_EXPIRED') {
-        console.error('🚨 REFRESH TOKEN EXPIRED - Manual re-registration required!');
-      }
-      
+      console.error('❌ Refresh failed:');
+      console.error('   Status:', error.response?.status);
+      console.error('   Data:', JSON.stringify(error.response?.data, null, 2));
+      console.error('   Message:', error.message);
       return false;
     }
   }
@@ -111,15 +81,9 @@ class TokenManager {
   async updateEnvFile(newAccessToken) {
     try {
       let envContent = await fs.readFile(this.envPath, 'utf8');
-      
-      // Replace access token
-      envContent = envContent.replace(
-        /MACHINE_TOKEN=.+/,
-        `MACHINE_TOKEN=${newAccessToken}`
-      );
-      
+      envContent = envContent.replace(/MACHINE_TOKEN=.+/, `MACHINE_TOKEN=${newAccessToken}`);
       await fs.writeFile(this.envPath, envContent);
-      console.log('✅ Updated .env file with new token');
+      console.log('✅ Updated .env file');
     } catch (error) {
       console.error('❌ Failed to update .env:', error.message);
     }
@@ -128,12 +92,9 @@ class TokenManager {
   startAutoRefresh() {
     // Check every hour
     this.refreshCheckInterval = setInterval(async () => {
-      console.log('⏰ Running scheduled token refresh check...');
-      await this.checkAndRefresh();
-    }, 60 * 60 * 1000); // 1 hour
-
-    // Also check on startup
-    setTimeout(() => this.checkAndRefresh(), 5000);
+      console.log('⏰ Scheduled refresh...');
+      await this.refreshAccessToken();
+    }, 60 * 60 * 1000);
   }
 
   stop() {

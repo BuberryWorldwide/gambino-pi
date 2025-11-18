@@ -47,8 +47,16 @@ async start() {
       logger.warn('API offline - will work in offline mode');
     }
     
-    await this.serialMonitor.start();
-    logger.info('Serial monitoring started');
+    // Start serial monitor (non-blocking if hardware missing)
+        try {
+          await this.serialMonitor.start();
+          logger.info('Serial monitoring started');
+          this.healthMonitor.updateSerialStatus(this.serialMonitor.isConnected);
+        } catch (error) {
+          logger.warn('⚠️  Serial monitor failed to start - running without hardware:', error.message);
+          this.healthMonitor.updateSerialStatus(false);
+          // Continue without serial - don't crash!
+        }
 
     // Force update health status after serial starts
     this.healthMonitor.updateSerialStatus(this.serialMonitor.isConnected); 
