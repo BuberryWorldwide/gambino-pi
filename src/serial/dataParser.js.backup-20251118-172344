@@ -20,7 +20,7 @@ class DataParser {
     // State for daily report parsing
     this.currentDailyMachine = null;
     this.lastMachineNumber = null;
-
+    
     // NEW: State for grand total collection
     this.isCollectingGrandTotal = false;
     this.grandTotalData = {
@@ -33,7 +33,7 @@ class DataParser {
     // State for voucher machine number tracking
     this.waitingForVoucherMachineNumber = false;
     this.currentVoucherMachine = null;
-
+    
     // Store ID for idempotency keys
     this.storeId = storeId;
   }
@@ -102,7 +102,7 @@ class DataParser {
       const confidenceNumber = confidenceMatch ? confidenceMatch[1] : null;
 
       if (!machineNumber || !amount) {
-        logger.warn('⚠ Voucher missing critical fields', {
+        logger.warn('⚠️ Voucher missing critical fields', {
           machineNumber,
           amount,
           voucherNumber
@@ -144,7 +144,8 @@ class DataParser {
       const trimmedData = rawData.trim();
 
       // CRITICAL: Strip ALL control characters first for pattern matching
-      const cleanData = trimmedData.replace(/[\x00-\x1F\x7F-\x9F!]/g, '').trim();
+      const cleanData = trimmedData.replace(/[\x00-\x1F\x7F-\x9F!0E]/g, '').trim();
+      
 
       // CRITICAL: Detect Unit Daily (start of grand totals section)
       if (cleanData.match(/Unit Daily/i)) {
@@ -271,11 +272,11 @@ class DataParser {
     if (dailyInMatch) {
       this.grandTotalData.dailyIn = parseFloat(dailyInMatch[1]);
       logger.debug(`📊 Grand Total - Daily In: $${this.grandTotalData.dailyIn}`);
-
+      
       // Create event if we have both Out and In (Total Paid doesn't exist at grand total level)
       if (this.grandTotalData.dailyOut !== null && this.grandTotalData.dailyIn !== null) {
         const event = this.buildGrandTotalEvent();
-
+        
         // Reset grand total collection
         this.isCollectingGrandTotal = false;
         this.grandTotalData = {
@@ -284,7 +285,7 @@ class DataParser {
           dailyTotalPaid: null,
           timestamp: null
         };
-
+        
         return event;
       }
       return null;
@@ -303,14 +304,14 @@ class DataParser {
   buildGrandTotalEvent() {
     const reportDate = new Date().toISOString().split('T')[0];
     const timestamp = this.grandTotalData.timestamp || new Date().toISOString();
-
+    
     // CRITICAL: Include storeId and timestamp in idempotency key
     // This allows multiple reports per day while preventing duplicates
     // Backend will use LATEST report per day for calculations
-    const idempotencyKey = this.storeId
+    const idempotencyKey = this.storeId 
       ? `${this.storeId}_daily_grand_total_${reportDate}_${timestamp}`
       : `daily_grand_total_${reportDate}_${timestamp}`;
-
+    
     logger.info(`✅ Grand Total Daily Report: In=$${this.grandTotalData.dailyIn}, Out=$${this.grandTotalData.dailyOut}`);
     logger.debug(`   Idempotency Key: ${idempotencyKey}`);
 
@@ -341,9 +342,8 @@ class DataParser {
     const cleanLine = line.replace(/[\x00-\x1F\x7F-\x9F!]/g, '').trim();
 
     // Check for machine number line: < 1>
-    // Also handle lines with extra characters: 0< 1> or 0< 1>E
-    const machineMatch = cleanLine.match(/<\s*(\d+)\s*>/);
-    if (machineMatch && !cleanLine.match(/Daily\s+(In|Out|Total)/i)) {
+    const machineMatch = cleanLine.match(/^<\s*(\d+)\s*>$/);
+    if (machineMatch) {
       const machineNumber = machineMatch[1];
       logger.info(`📊 Captured machine number: ${machineNumber}`);
       this.currentDailyMachine = machineNumber;
@@ -351,9 +351,8 @@ class DataParser {
       return null;
     }
 
-    // Check for combined format: < 1> Daily In == 897.00
-    // Also handle formats with extra characters: 0< 1>E Daily In == 897.00
-    const combinedMatch = cleanLine.match(/<\s*(\d+)\s*>[\s\nE]*Daily\s+In\s+==\s+(\d+\.\d{2})/i);
+    // Check for combined format: < 1>\n Daily In == 897.00
+    const combinedMatch = cleanLine.match(/<\s*(\d+)\s*>[\s\n]+Daily\s+In\s+==\s+(\d+\.\d{2})/i);
     if (combinedMatch) {
       const machineNumber = combinedMatch[1];
       const amount = parseFloat(combinedMatch[2]);
