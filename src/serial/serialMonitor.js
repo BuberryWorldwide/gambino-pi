@@ -129,11 +129,59 @@ class SerialMonitor extends EventEmitter {
     return 'usb';
   }
 
+  // Auto-detect printer device - checks USB printers first, then serial
+  _autoDetectPrinter() {
+    const mainSerialPort = this.config.get('serialPort'); // e.g., /dev/ttyUSB0
+
+    // Try USB printers first (/dev/usb/lp0, lp1, etc.)
+    for (let i = 0; i <= 3; i++) {
+      const usbPath = `/dev/usb/lp${i}`;
+      if (fs.existsSync(usbPath)) {
+        logger.info(`🖨️ Auto-detected USB printer: ${usbPath}`);
+        return usbPath;
+      }
+    }
+
+    // Try serial printers (/dev/ttyUSB1, ttyUSB2, etc. - skip the main Goose port)
+    for (let i = 0; i <= 5; i++) {
+      const serialPath = `/dev/ttyUSB${i}`;
+      // Skip the main serial port (Mutha Goose)
+      if (serialPath === mainSerialPort) {
+        continue;
+      }
+      if (fs.existsSync(serialPath)) {
+        logger.info(`🖨️ Auto-detected serial printer: ${serialPath}`);
+        return serialPath;
+      }
+    }
+
+    // Try /dev/ttyACM* ports
+    for (let i = 0; i <= 3; i++) {
+      const acmPath = `/dev/ttyACM${i}`;
+      if (fs.existsSync(acmPath)) {
+        logger.info(`🖨️ Auto-detected ACM printer: ${acmPath}`);
+        return acmPath;
+      }
+    }
+
+    logger.info('🖨️ No printer device auto-detected');
+    return null;
+  }
+
   async connectPrinter() {
-    const printerPath = this.config.get('printerPort');
+    // Try config first, then auto-detect
+    let printerPath = this.config.get('printerPort');
+
+    // If no config or configured path doesn't exist, auto-detect
+    if (!printerPath || !fs.existsSync(printerPath)) {
+      if (printerPath) {
+        logger.warn(`🖨️ Configured printer ${printerPath} not found, auto-detecting...`);
+      }
+      printerPath = this._autoDetectPrinter();
+    }
 
     if (!printerPath) {
-      logger.info('No printer port configured, skipping printer pass-through');
+      logger.info('No printer found, skipping printer pass-through');
       return;
     }
 
